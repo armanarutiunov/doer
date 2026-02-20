@@ -19,7 +19,8 @@ defmodule Doer.MixProject do
 
   defp deps do
     [
-      {:term_ui, "~> 0.2.0"}
+      {:term_ui, "~> 0.2.0"},
+      {:jason, "~> 1.4"}
     ]
   end
 end
