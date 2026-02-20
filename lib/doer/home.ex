@@ -3,21 +3,624 @@ defmodule Doer.Home do
 
   alias TermUI.Event
   alias TermUI.Renderer.Style
+  alias Doer.{Todo, Store}
 
-  def init(_opts), do: %{}
+  # --- Init ---
 
-  def event_to_msg(%Event.Key{key: "q"}, _state), do: {:msg, :quit}
+  def init(_opts) do
+    todos = Store.load()
+
+    %{
+      mode: :normal,
+      todos: todos,
+      cursor: 0,
+      visual_anchor: 0,
+      editing_text: "",
+      editing_id: nil,
+      editing_original: "",
+      search_text: "",
+      search_matches: [],
+      show_help: false,
+      terminal_height: 24
+    }
+  end
+
+  # --- Event to Msg ---
+
+  # Resize
+  def event_to_msg(%Event.Resize{height: h}, _state), do: {:msg, {:resize, h}}
+
+  # Normal mode
+  def event_to_msg(%Event.Key{key: "q"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :quit}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :normal, show_help: false})
+      when key in ["j", :down],
+      do: {:msg, :cursor_down}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :normal, show_help: false})
+      when key in ["k", :up],
+      do: {:msg, :cursor_up}
+
+  def event_to_msg(%Event.Key{key: "a"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :add_todo}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :normal, show_help: false})
+      when key in ["e", "i"],
+      do: {:msg, :edit_todo}
+
+  def event_to_msg(%Event.Key{key: "d"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :delete_todo}
+
+  def event_to_msg(%Event.Key{key: " "}, %{mode: :normal, show_help: false}),
+    do: {:msg, :toggle_todo}
+
+  def event_to_msg(%Event.Key{key: "v"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :enter_visual}
+
+  def event_to_msg(%Event.Key{key: "?"}, %{mode: :normal}),
+    do: {:msg, :toggle_help}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{show_help: true}),
+    do: {:msg, :toggle_help}
+
+  def event_to_msg(%Event.Key{key: "/"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :enter_search}
+
+  def event_to_msg(%Event.Key{key: "G"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :cursor_end}
+
+  def event_to_msg(%Event.Key{key: "g"}, %{mode: :normal, show_help: false}),
+    do: {:msg, :cursor_start}
+
+  def event_to_msg(%Event.Key{key: "d", modifiers: [:ctrl]}, %{mode: :normal, show_help: false}),
+    do: {:msg, :half_page_down}
+
+  def event_to_msg(%Event.Key{key: "u", modifiers: [:ctrl]}, %{mode: :normal, show_help: false}),
+    do: {:msg, :half_page_up}
+
+  # Insert mode
+  def event_to_msg(%Event.Key{key: :enter}, %{mode: :insert}),
+    do: {:msg, :confirm_edit}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{mode: :insert}),
+    do: {:msg, :cancel_edit}
+
+  def event_to_msg(%Event.Key{key: :backspace}, %{mode: :insert}),
+    do: {:msg, :backspace}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :insert}) when is_binary(key) and byte_size(key) == 1,
+    do: {:msg, {:type_char, key}}
+
+  def event_to_msg(%Event.Key{key: " "}, %{mode: :insert}),
+    do: {:msg, {:type_char, " "}}
+
+  # Visual mode
+  def event_to_msg(%Event.Key{key: key}, %{mode: :visual})
+      when key in ["j", :down],
+      do: {:msg, :visual_down}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :visual})
+      when key in ["k", :up],
+      do: {:msg, :visual_up}
+
+  def event_to_msg(%Event.Key{key: key, modifiers: [:ctrl]}, %{mode: :visual})
+      when key in ["j", :down],
+      do: {:msg, :move_selected_down}
+
+  def event_to_msg(%Event.Key{key: key, modifiers: [:ctrl]}, %{mode: :visual})
+      when key in ["k", :up],
+      do: {:msg, :move_selected_up}
+
+  def event_to_msg(%Event.Key{key: "d"}, %{mode: :visual}),
+    do: {:msg, :delete_selected}
+
+  def event_to_msg(%Event.Key{key: " "}, %{mode: :visual}),
+    do: {:msg, :toggle_selected}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{mode: :visual}),
+    do: {:msg, :exit_visual}
+
+  # Search mode
+  def event_to_msg(%Event.Key{key: :enter}, %{mode: :search}),
+    do: {:msg, :confirm_search}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{mode: :search}),
+    do: {:msg, :cancel_search}
+
+  def event_to_msg(%Event.Key{key: :backspace}, %{mode: :search}),
+    do: {:msg, :search_backspace}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :search}) when is_binary(key) and byte_size(key) == 1,
+    do: {:msg, {:search_type, key}}
+
+  # Search nav mode
+  def event_to_msg(%Event.Key{key: key}, %{mode: :search_nav})
+      when key in ["j", :down],
+      do: {:msg, :cursor_down}
+
+  def event_to_msg(%Event.Key{key: key}, %{mode: :search_nav})
+      when key in ["k", :up],
+      do: {:msg, :cursor_up}
+
+  def event_to_msg(%Event.Key{key: "/"}, %{mode: :search_nav}),
+    do: {:msg, :enter_search}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{mode: :search_nav}),
+    do: {:msg, :cancel_search}
+
   def event_to_msg(_, _), do: :ignore
 
-  def update(:quit, state), do: {state, [:quit]}
+  # --- Update ---
 
-  def view(_state) do
-    stack(:vertical, [
-      text("doer", Style.new(fg: :cyan, attrs: [:bold])),
-      text("", nil),
-      text("Hello, World!", nil),
-      text("", nil),
-      text("Press Q to quit", Style.new(fg: :bright_black))
-    ])
+  def update({:resize, h}, state), do: {%{state | terminal_height: h}}
+
+  def update(:quit, state) do
+    Store.save(state.todos)
+    {state, [:quit]}
+  end
+
+  def update(:cursor_down, state) do
+    max = max(length(combined_list(state)) - 1, 0)
+    {%{state | cursor: min(state.cursor + 1, max)}}
+  end
+
+  def update(:cursor_up, state) do
+    {%{state | cursor: max(state.cursor - 1, 0)}}
+  end
+
+  def update(:cursor_end, state) do
+    max = max(length(combined_list(state)) - 1, 0)
+    {%{state | cursor: max}}
+  end
+
+  def update(:cursor_start, state) do
+    {%{state | cursor: 0}}
+  end
+
+  def update(:half_page_down, state) do
+    jump = div(state.terminal_height, 2)
+    max = max(length(combined_list(state)) - 1, 0)
+    {%{state | cursor: min(state.cursor + jump, max)}}
+  end
+
+  def update(:half_page_up, state) do
+    jump = div(state.terminal_height, 2)
+    {%{state | cursor: max(state.cursor - jump, 0)}}
+  end
+
+  # Add todo
+  def update(:add_todo, state) do
+    new_todo = Todo.new("")
+    active = Enum.filter(state.todos, &(!&1.done))
+    insert_pos = min(state.cursor + 1, length(active))
+
+    {before, after_list} = Enum.split(active, insert_pos)
+    completed = Enum.filter(state.todos, & &1.done)
+    new_todos = before ++ [new_todo] ++ after_list ++ completed
+
+    {%{state |
+      mode: :insert,
+      todos: new_todos,
+      cursor: insert_pos,
+      editing_id: nil,
+      editing_text: "",
+      editing_original: ""
+    }}
+  end
+
+  # Edit todo
+  def update(:edit_todo, state) do
+    combined = combined_list(state)
+    case Enum.at(combined, state.cursor) do
+      nil -> :noreply
+      todo ->
+        {%{state |
+          mode: :insert,
+          editing_id: todo.id,
+          editing_text: todo.text,
+          editing_original: todo.text
+        }}
+    end
+  end
+
+  # Confirm edit
+  def update(:confirm_edit, state) do
+    state = if state.editing_id == nil do
+      # New todo via 'a'
+      if String.trim(state.editing_text) == "" do
+        # Empty text — remove the todo
+        active = Enum.filter(state.todos, &(!&1.done))
+        todo = Enum.at(active, state.cursor)
+        %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}
+      else
+        active = Enum.filter(state.todos, &(!&1.done))
+        todo = Enum.at(active, state.cursor)
+        todos = Enum.map(state.todos, fn t ->
+          if t.id == todo.id, do: %{t | text: state.editing_text}, else: t
+        end)
+        %{state | todos: todos}
+      end
+    else
+      # Editing existing
+      if String.trim(state.editing_text) == "" do
+        # Empty — revert to original
+        %{state | todos: Enum.map(state.todos, fn t ->
+          if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
+        end)}
+      else
+        %{state | todos: Enum.map(state.todos, fn t ->
+          if t.id == state.editing_id, do: %{t | text: state.editing_text}, else: t
+        end)}
+      end
+    end
+
+    cursor = clamp_cursor(state.cursor, state.todos)
+    state = %{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""}
+    Store.save(state.todos)
+    {state}
+  end
+
+  # Cancel edit
+  def update(:cancel_edit, state) do
+    state = if state.editing_id == nil do
+      # New todo — remove it
+      active = Enum.filter(state.todos, &(!&1.done))
+      todo = Enum.at(active, state.cursor)
+      if todo, do: %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}, else: state
+    else
+      # Editing existing — revert
+      %{state | todos: Enum.map(state.todos, fn t ->
+        if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
+      end)}
+    end
+
+    cursor = clamp_cursor(state.cursor, state.todos)
+    {%{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""}}
+  end
+
+  def update(:backspace, state) do
+    text = String.slice(state.editing_text, 0..-2//1)
+    {%{state | editing_text: text}}
+  end
+
+  def update({:type_char, char}, state) do
+    {%{state | editing_text: state.editing_text <> char}}
+  end
+
+  # Delete
+  def update(:delete_todo, state) do
+    combined = combined_list(state)
+    case Enum.at(combined, state.cursor) do
+      nil -> :noreply
+      todo ->
+        todos = Enum.reject(state.todos, &(&1.id == todo.id))
+        cursor = clamp_cursor(state.cursor, todos)
+        Store.save(todos)
+        {%{state | todos: todos, cursor: cursor}}
+    end
+  end
+
+  # Toggle
+  def update(:toggle_todo, state) do
+    combined = combined_list(state)
+    case Enum.at(combined, state.cursor) do
+      nil -> :noreply
+      todo ->
+        todos = Enum.map(state.todos, fn t ->
+          if t.id == todo.id, do: Todo.toggle(t), else: t
+        end)
+        Store.save(todos)
+        {%{state | todos: todos}}
+    end
+  end
+
+  # Visual mode
+  def update(:enter_visual, state) do
+    {%{state | mode: :visual, visual_anchor: state.cursor}}
+  end
+
+  def update(:exit_visual, state) do
+    {%{state | mode: :normal}}
+  end
+
+  def update(:visual_down, state) do
+    max = max(length(combined_list(state)) - 1, 0)
+    {%{state | cursor: min(state.cursor + 1, max)}}
+  end
+
+  def update(:visual_up, state) do
+    {%{state | cursor: max(state.cursor - 1, 0)}}
+  end
+
+  def update(:delete_selected, state) do
+    selected_ids = selected_todo_ids(state)
+    todos = Enum.reject(state.todos, &(&1.id in selected_ids))
+    cursor = clamp_cursor(state.cursor, todos)
+    Store.save(todos)
+    {%{state | mode: :normal, todos: todos, cursor: cursor}}
+  end
+
+  def update(:toggle_selected, state) do
+    selected_ids = selected_todo_ids(state)
+    todos = Enum.map(state.todos, fn t ->
+      if t.id in selected_ids, do: Todo.toggle(t), else: t
+    end)
+    Store.save(todos)
+    {%{state | mode: :normal, todos: todos}}
+  end
+
+  def update(:move_selected_down, state) do
+    active = Enum.filter(state.todos, &(!&1.done))
+    {sel_min, sel_max} = selection_range(state)
+
+    if sel_max < length(active) - 1 do
+      # Move selected items down within active list
+      active_list = Enum.with_index(active)
+      {selected, rest} = Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
+      {before_swap, [swap_item | after_swap]} = Enum.split(rest, sel_min)
+
+      new_active =
+        (Enum.map(before_swap, &elem(&1, 0)) ++
+         [elem(swap_item, 0)] ++
+         Enum.map(selected, &elem(&1, 0)) ++
+         Enum.map(after_swap, &elem(&1, 0)))
+
+      completed = Enum.filter(state.todos, & &1.done)
+      {%{state | todos: new_active ++ completed, cursor: state.cursor + 1, visual_anchor: state.visual_anchor + 1}}
+    else
+      :noreply
+    end
+  end
+
+  def update(:move_selected_up, state) do
+    active = Enum.filter(state.todos, &(!&1.done))
+    {sel_min, sel_max} = selection_range(state)
+
+    if sel_min > 0 do
+      active_list = Enum.with_index(active)
+      {selected, rest} = Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
+      {before, after_list} = Enum.split(rest, sel_min - 1)
+
+      new_active =
+        (Enum.map(before, &elem(&1, 0)) ++
+         Enum.map(selected, &elem(&1, 0)) ++
+         Enum.map(after_list, &elem(&1, 0)))
+
+      completed = Enum.filter(state.todos, & &1.done)
+      {%{state | todos: new_active ++ completed, cursor: state.cursor - 1, visual_anchor: state.visual_anchor - 1}}
+    else
+      :noreply
+    end
+  end
+
+  # Search
+  def update(:enter_search, state) do
+    {%{state | mode: :search, search_text: state.search_text}}
+  end
+
+  def update(:confirm_search, state) do
+    matches = filter_todos(state.todos, state.search_text)
+    {%{state | mode: :search_nav, search_matches: Enum.map(matches, & &1.id), cursor: 0}}
+  end
+
+  def update(:cancel_search, state) do
+    {%{state | mode: :normal, search_text: "", search_matches: []}}
+  end
+
+  def update(:search_backspace, state) do
+    text = String.slice(state.search_text, 0..-2//1)
+    {%{state | search_text: text}}
+  end
+
+  def update({:search_type, char}, state) do
+    {%{state | search_text: state.search_text <> char}}
+  end
+
+  # Help
+  def update(:toggle_help, state) do
+    {%{state | show_help: !state.show_help}}
+  end
+
+  # --- View ---
+
+  def view(state) do
+    main_content = render_list(state)
+    mode_bar = render_mode_bar(state)
+    search_bar = if state.mode in [:search, :search_nav], do: render_search_bar(state), else: nil
+
+    children =
+      [main_content, search_bar, mode_bar]
+      |> Enum.reject(&is_nil/1)
+
+    base = stack(:vertical, children)
+
+    if state.show_help do
+      help = render_help(state)
+      stack(:vertical, [base, help])
+    else
+      base
+    end
+  end
+
+  # --- Private: View helpers ---
+
+  defp render_list(state) do
+    active = Enum.filter(state.todos, &(!&1.done))
+    completed = Enum.filter(state.todos, & &1.done)
+
+    display_todos = case state.mode do
+      mode when mode in [:search, :search_nav] and state.search_text != "" ->
+        filtered = filter_todos(state.todos, state.search_text)
+        fa = Enum.filter(filtered, &(!&1.done))
+        fc = Enum.filter(filtered, & &1.done)
+        {fa, fc}
+      _ ->
+        {active, completed}
+    end
+
+    {disp_active, disp_completed} = display_todos
+
+    active_rows = disp_active
+      |> Enum.with_index()
+      |> Enum.map(fn {todo, idx} -> render_todo_row(todo, idx, state, false) end)
+
+    separator = if length(disp_completed) > 0 do
+      [text("─── completed ───", Style.new(fg: :bright_black))]
+    else
+      []
+    end
+
+    completed_rows = disp_completed
+      |> Enum.with_index(length(disp_active))
+      |> Enum.map(fn {todo, idx} -> render_todo_row(todo, idx, state, true) end)
+
+    stack(:vertical, active_rows ++ separator ++ completed_rows)
+  end
+
+  defp render_todo_row(todo, idx, state, is_completed) do
+    is_cursor = idx == state.cursor
+    is_selected = state.mode == :visual and idx in visual_range(state)
+
+    # Editing indicator
+    is_editing = state.mode == :insert and
+      ((state.editing_id == nil and idx == state.cursor) or
+       (state.editing_id == todo.id))
+
+    # Left indicator
+    indicator = cond do
+      is_selected -> text("▎ ", Style.new(fg: :magenta))
+      is_cursor -> text("  ", nil)
+      true -> text("  ", nil)
+    end
+
+    # Checkbox
+    checkbox = if is_completed do
+      text("◉ ", Style.new(fg: :bright_black))
+    else
+      text("◯ ", nil)
+    end
+
+    # Todo text
+    display_text = if is_editing do
+      state.editing_text <> "█"
+    else
+      todo.text
+    end
+
+    text_style = cond do
+      is_editing -> Style.new(fg: :green)
+      is_completed -> Style.new(fg: :bright_black, attrs: MapSet.new([:strikethrough]))
+      is_cursor -> Style.new(fg: :white, attrs: MapSet.new([:bold]))
+      true -> nil
+    end
+
+    todo_text = text(display_text, text_style)
+
+    # Age
+    age = text("  " <> Todo.age_label(todo), Style.new(fg: :bright_black))
+
+    completed_age = if is_completed and todo.completed_at do
+      text("  " <> Todo.completed_label(todo), Style.new(fg: :bright_black))
+    else
+      empty()
+    end
+
+    row = stack(:horizontal, [indicator, checkbox, todo_text, age, completed_age])
+
+    if is_cursor and not is_editing do
+      styled(row, Style.new(bg: :bright_black))
+    else
+      row
+    end
+  end
+
+  defp render_mode_bar(state) do
+    {label, bg_color} = case state.mode do
+      :normal -> {"NORMAL", :blue}
+      :visual -> {"VISUAL", :magenta}
+      :insert -> {"INSERT", :green}
+      :search -> {"SEARCH", :yellow}
+      :search_nav -> {"SEARCH", :yellow}
+    end
+
+    text(" -- #{label} -- ", Style.new(fg: :black, bg: bg_color))
+  end
+
+  defp render_search_bar(state) do
+    text("/" <> state.search_text <> "█", Style.new(fg: :white))
+  end
+
+  defp render_help(_state) do
+    lines = [
+      "  Keybindings:",
+      "  j/k/↑/↓  navigate",
+      "  a        add todo",
+      "  e/i      edit todo",
+      "  d        delete todo",
+      "  space    toggle done",
+      "  v        visual mode",
+      "  /        search",
+      "  G        go to end",
+      "  g        go to start",
+      "  ctrl+d   half page down",
+      "  ctrl+u   half page up",
+      "  ?        toggle help",
+      "  q        quit"
+    ]
+
+    help_content = stack(:vertical,
+      Enum.map(lines, &text(&1, Style.new(fg: :white)))
+    )
+
+    %{
+      type: :overlay,
+      content: help_content,
+      x: 2,
+      y: 1,
+      z: 100,
+      width: 35,
+      height: length(lines) + 2,
+      bg: Style.new(bg: :black)
+    }
+  end
+
+  # --- Private: Helpers ---
+
+  defp combined_list(state) do
+    active = Enum.filter(state.todos, &(!&1.done))
+    completed = Enum.filter(state.todos, & &1.done)
+    active ++ completed
+  end
+
+  defp clamp_cursor(cursor, todos) do
+    combined = Enum.filter(todos, &(!&1.done)) ++ Enum.filter(todos, & &1.done)
+    max = max(length(combined) - 1, 0)
+    min(cursor, max)
+  end
+
+  defp selection_range(%{cursor: cursor, visual_anchor: anchor}) do
+    {min(cursor, anchor), max(cursor, anchor)}
+  end
+
+  defp visual_range(state) do
+    {sel_min, sel_max} = selection_range(state)
+    Enum.to_list(sel_min..sel_max)
+  end
+
+  defp selected_todo_ids(state) do
+    combined = combined_list(state)
+    range = visual_range(state)
+    range
+    |> Enum.map(&Enum.at(combined, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.map(& &1.id)
+  end
+
+  defp filter_todos(todos, query) do
+    q = String.downcase(query)
+    Enum.filter(todos, fn t ->
+      String.contains?(String.downcase(t.text), q)
+    end)
   end
 end
