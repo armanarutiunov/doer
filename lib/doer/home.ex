@@ -622,26 +622,40 @@ defmodule Doer.Home do
 
   defp render_help(left_pad) do
     lines = [
-      "  Keybindings:",
+      "Keybindings",
       "",
-      "  j/k/↑/↓   navigate",
-      "  a          add todo",
-      "  e/i        edit todo",
-      "  d          delete todo",
-      "  space      toggle done",
-      "  v          visual mode",
-      "  /          search",
-      "  G          go to end",
-      "  g          go to start",
-      "  ctrl+d     half page down",
-      "  ctrl+u     half page up",
-      "  ?          toggle help",
-      "  q          quit"
+      "j/k/↑/↓   navigate",
+      "a          add todo",
+      "e/i        edit todo",
+      "d          delete todo",
+      "space      toggle done",
+      "v          visual mode",
+      "/          search",
+      "G          go to end",
+      "g          go to start",
+      "ctrl+d     half page down",
+      "ctrl+u     half page up",
+      "?          toggle help",
+      "q          quit"
     ]
 
-    help_content = stack(:vertical,
-      Enum.map(lines, &text(&1, Style.new(fg: :white)))
-    )
+    inner_w = 30
+    border_style = Style.new(fg: :bright_black, bg: :black)
+    text_style = Style.new(fg: :white, bg: :black)
+
+    top_border = text("┌" <> String.duplicate("─", inner_w) <> "┐", border_style)
+    bottom_border = text("└" <> String.duplicate("─", inner_w) <> "┘", border_style)
+
+    content_rows = Enum.map(lines, fn line ->
+      padded = String.pad_trailing(" " <> line, inner_w)
+      stack(:horizontal, [
+        text("│", border_style),
+        text(padded, text_style),
+        text("│", border_style)
+      ])
+    end)
+
+    help_content = stack(:vertical, [top_border] ++ content_rows ++ [bottom_border])
 
     %{
       type: :overlay,
@@ -649,7 +663,7 @@ defmodule Doer.Home do
       x: left_pad,
       y: @pad_y_top,
       z: 100,
-      width: 35,
+      width: inner_w + 2,
       height: length(lines) + 2,
       bg: Style.new(bg: :black)
     }
