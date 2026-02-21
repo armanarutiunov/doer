@@ -5,7 +5,7 @@ defmodule Doer.Home do
   alias TermUI.Renderer.Style
   alias Doer.{Todo, Store}
 
-  @pad_y_top 2
+  @pad_y_top 1
   @pad_y_bottom 1
   @prefix_w 4  # indicator(2) + checkbox(2)
 
@@ -122,6 +122,12 @@ defmodule Doer.Home do
 
   def event_to_msg(%Event.Key{key: key, modifiers: [:ctrl]}, %{mode: :visual})
       when key in ["k", :up],
+      do: {:msg, :move_selected_up}
+
+  def event_to_msg(%Event.Key{key: "J", modifiers: []}, %{mode: :visual}),
+      do: {:msg, :move_selected_down}
+
+  def event_to_msg(%Event.Key{key: "K", modifiers: []}, %{mode: :visual}),
       do: {:msg, :move_selected_up}
 
   def event_to_msg(%Event.Key{key: key, modifiers: []}, %{mode: :visual})
@@ -488,15 +494,21 @@ defmodule Doer.Home do
   defp render_list(state, content_w, pad_str) do
     {disp_active, disp_completed} = display_todos(state)
 
-    active_header = if length(disp_active) > 0 do
-      [render_section_header("Todos", "Created", content_w, pad_str)]
-    else
-      []
-    end
+    active_header = [render_section_header("Todos", "Created", content_w, pad_str)]
+    active_header_spacing = blank_rows(1)
 
-    active_rows = disp_active
+    active_rows = if length(disp_active) == 0 do
+      empty_style = Style.new(fg: :bright_black)
+      [stack(:horizontal, [
+        text(pad_str, nil),
+        text(String.duplicate(" ", @prefix_w), nil),
+        text("press a to add a new todo", empty_style)
+      ])]
+    else
+      disp_active
       |> Enum.with_index()
       |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, false, content_w, pad_str) end)
+    end
 
     section_spacing = if length(disp_completed) > 0, do: blank_rows(2), else: []
 
@@ -512,7 +524,7 @@ defmodule Doer.Home do
       |> Enum.with_index(length(disp_active))
       |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, true, content_w, pad_str) end)
 
-    active_header ++ active_rows ++ section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
+    active_header ++ active_header_spacing ++ active_rows ++ section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
   end
 
   defp render_section_header(title, date_label, content_w, pad_str) do
@@ -541,9 +553,9 @@ defmodule Doer.Home do
     age_str = Todo.age_label(todo)
     completed_age_str = if is_completed and todo.completed_at, do: Todo.completed_label(todo), else: nil
 
-    # Right column: "  0d" or "  0d  0d"
-    right_col = "  " <> String.pad_leading(age_str, 4)
-    right_col = if completed_age_str, do: right_col <> "  " <> String.pad_leading(completed_age_str, 4), else: right_col
+    # Right column: aligned with "Created" (7) or "Created  Completed" (7+2+9)
+    right_col = "  " <> String.pad_leading(age_str, 7)
+    right_col = if completed_age_str, do: right_col <> "  " <> String.pad_leading(completed_age_str, 9), else: right_col
     right_w = String.length(right_col)
 
     # Available width for text (after indicator + checkbox, before age)
@@ -603,7 +615,7 @@ defmodule Doer.Home do
     end)
   end
 
-  defp render_bottom(state, _content_w, pad_str) do
+  defp render_bottom(state, content_w, pad_str) do
     search_bar = if state.mode in [:search, :search_nav] do
       search_text = "/" <> state.search_text <> "█"
       [text(pad_str <> search_text, Style.new(fg: :white))]
@@ -619,16 +631,31 @@ defmodule Doer.Home do
       :search_nav -> {"SEARCH", :yellow}
     end
 
-    hint = if state.mode == :normal and not state.show_help,
-      do: text("  ? for help", Style.new(fg: :bright_black)),
-      else: text("", nil)
+    mode_text = " #{label} "
+    mode_w = String.length(mode_text)
+
+    # Completed count
+    total = length(state.todos)
+    done = Enum.count(state.todos, & &1.done)
+    count_text = "#{done}/#{total} completed"
+    count_w = String.length(count_text)
+
+    # Help hint
+    hint_text = if state.mode == :normal and not state.show_help, do: "? for help", else: ""
+    hint_w = String.length(hint_text)
+
+    # Padding between mode, count, and hint to fill content_w
+    remaining = max(content_w - mode_w - count_w - hint_w, 0)
+    left_gap = div(remaining, 2)
+    right_gap = remaining - left_gap
 
     mode_bar = [stack(:horizontal, [
       text(pad_str, nil),
-      text(" -- ", Style.new(fg: :bright_black)),
-      text(" #{label} ", Style.new(fg: :black, bg: bg_color)),
-      text(" -- ", Style.new(fg: :bright_black)),
-      hint
+      text(mode_text, Style.new(fg: :black, bg: bg_color)),
+      text(String.duplicate(" ", left_gap), nil),
+      text(count_text, Style.new(fg: :bright_black)),
+      text(String.duplicate(" ", right_gap), nil),
+      text(hint_text, Style.new(fg: :bright_black))
     ])]
 
     search_bar ++ mode_bar
@@ -754,13 +781,33 @@ defmodule Doer.Home do
 
   defp adjust_scroll(state) do
     vh = viewport_height(state)
+    row = cursor_visual_row(state)
     offset = state.scroll_offset
 
-    offset = if state.cursor < offset, do: state.cursor, else: offset
-    offset = if state.cursor >= offset + vh, do: state.cursor - vh + 1, else: offset
+    offset = if row < offset, do: row, else: offset
+    offset = if row >= offset + vh, do: row - vh + 1, else: offset
     offset = max(offset, 0)
 
     %{state | scroll_offset: offset}
+  end
+
+  defp cursor_visual_row(state) do
+    {disp_active, disp_completed} = display_todos(state)
+    active_count = length(disp_active)
+    completed_count = length(disp_completed)
+
+    # Active section: header(1) + spacing(1) + rows
+    active_header_rows = 2
+
+    if state.cursor < active_count do
+      active_header_rows + state.cursor
+    else
+      completed_idx = state.cursor - active_count
+      base = active_header_rows + max(active_count, 1)
+      # section_spacing(2) + completed_header(1) + spacing(1)
+      separator = if completed_count > 0, do: 4, else: 0
+      base + separator + completed_idx
+    end
   end
 
   defp combined_list(state) do
