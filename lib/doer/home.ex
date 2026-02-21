@@ -27,6 +27,7 @@ defmodule Doer.Home do
       search_text: "",
       search_matches: [],
       show_help: false,
+      scroll_offset: 0,
       terminal_width: 80,
       terminal_height: 24
     }
@@ -169,31 +170,31 @@ defmodule Doer.Home do
 
   def update(:cursor_down, state) do
     max = max(length(combined_list(state)) - 1, 0)
-    {%{state | cursor: min(state.cursor + 1, max)}}
+    {%{state | cursor: min(state.cursor + 1, max)} |> adjust_scroll()}
   end
 
   def update(:cursor_up, state) do
-    {%{state | cursor: max(state.cursor - 1, 0)}}
+    {%{state | cursor: max(state.cursor - 1, 0)} |> adjust_scroll()}
   end
 
   def update(:cursor_end, state) do
     max = max(length(combined_list(state)) - 1, 0)
-    {%{state | cursor: max}}
+    {%{state | cursor: max} |> adjust_scroll()}
   end
 
   def update(:cursor_start, state) do
-    {%{state | cursor: 0}}
+    {%{state | cursor: 0} |> adjust_scroll()}
   end
 
   def update(:half_page_down, state) do
     jump = div(state.terminal_height, 2)
     max = max(length(combined_list(state)) - 1, 0)
-    {%{state | cursor: min(state.cursor + jump, max)}}
+    {%{state | cursor: min(state.cursor + jump, max)} |> adjust_scroll()}
   end
 
   def update(:half_page_up, state) do
     jump = div(state.terminal_height, 2)
-    {%{state | cursor: max(state.cursor - jump, 0)}}
+    {%{state | cursor: max(state.cursor - jump, 0)} |> adjust_scroll()}
   end
 
   # Add todo
@@ -213,7 +214,7 @@ defmodule Doer.Home do
       editing_id: nil,
       editing_text: "",
       editing_original: ""
-    }}
+    } |> adjust_scroll()}
   end
 
   # Edit todo
@@ -326,11 +327,11 @@ defmodule Doer.Home do
 
   def update(:visual_down, state) do
     max = max(length(combined_list(state)) - 1, 0)
-    {%{state | cursor: min(state.cursor + 1, max)}}
+    {%{state | cursor: min(state.cursor + 1, max)} |> adjust_scroll()}
   end
 
   def update(:visual_up, state) do
-    {%{state | cursor: max(state.cursor - 1, 0)}}
+    {%{state | cursor: max(state.cursor - 1, 0)} |> adjust_scroll()}
   end
 
   def update(:delete_selected, state) do
@@ -399,7 +400,7 @@ defmodule Doer.Home do
 
   def update(:confirm_search, state) do
     matches = filter_todos(state.todos, state.search_text)
-    {%{state | mode: :search_nav, search_matches: Enum.map(matches, & &1.id), cursor: 0}}
+    {%{state | mode: :search_nav, search_matches: Enum.map(matches, & &1.id), cursor: 0} |> adjust_scroll()}
   end
 
   def update(:cancel_search, state),
@@ -429,21 +430,27 @@ defmodule Doer.Home do
 
     # Todo list rows
     list_rows = render_list(state, content_w, pad_str)
+    list_content = stack(:vertical, list_rows)
 
     # Bottom section: search bar + mode bar
     bottom_rows = render_bottom(state, content_w, pad_str)
+    bottom_row_count = if state.mode in [:search, :search_nav], do: 2, else: 1
 
-    # Calculate spacer to push bottom to screen bottom
-    # Layout: top_pad + list + spacer + bottom + bottom_pad
-    content_row_count = count_rows(list_rows)
-    bottom_row_count = length(bottom_rows)
-    used = @pad_y_top + content_row_count + bottom_row_count + @pad_y_bottom
-    spacer_h = max(state.terminal_height - used, 0)
-    spacer = blank_rows(spacer_h)
+    # Viewport for scrollable list
+    vh = max(state.terminal_height - @pad_y_top - bottom_row_count - @pad_y_bottom, 1)
+
+    viewport = %{
+      type: :viewport,
+      content: list_content,
+      scroll_x: 0,
+      scroll_y: state.scroll_offset,
+      width: state.terminal_width,
+      height: vh
+    }
 
     bottom_pad = blank_rows(@pad_y_bottom)
 
-    all = top_pad ++ list_rows ++ spacer ++ bottom_rows ++ bottom_pad
+    all = top_pad ++ [viewport] ++ bottom_rows ++ bottom_pad
     base = stack(:vertical, all)
 
     if state.show_help do
@@ -462,17 +469,6 @@ defmodule Doer.Home do
 
   defp blank_rows(0), do: []
   defp blank_rows(n), do: Enum.map(1..n, fn _ -> text("", nil) end)
-
-  defp count_rows(nodes) do
-    Enum.reduce(nodes, 0, fn node, acc ->
-      case node do
-        %{type: :stack, direction: :vertical, children: children} ->
-          acc + length(children)
-        _ ->
-          acc + 1
-      end
-    end)
-  end
 
   # --- Private: View helpers ---
 
@@ -731,6 +727,23 @@ defmodule Doer.Home do
   end
 
   # --- Private: State helpers ---
+
+  defp viewport_height(state) do
+    # bottom bar = 1 (mode) + 1 if searching
+    bottom_rows = if state.mode in [:search, :search_nav], do: 2, else: 1
+    max(state.terminal_height - @pad_y_top - bottom_rows - @pad_y_bottom, 1)
+  end
+
+  defp adjust_scroll(state) do
+    vh = viewport_height(state)
+    offset = state.scroll_offset
+
+    offset = if state.cursor < offset, do: state.cursor, else: offset
+    offset = if state.cursor >= offset + vh, do: state.cursor - vh + 1, else: offset
+    offset = max(offset, 0)
+
+    %{state | scroll_offset: offset}
+  end
 
   defp combined_list(state) do
     active = Enum.filter(state.todos, &(!&1.done))
