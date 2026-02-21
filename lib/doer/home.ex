@@ -14,6 +14,7 @@ defmodule Doer.Home do
   def init(_opts) do
     todos = Store.load()
     {rows, cols} = TermUI.Platform.terminal_size()
+    schedule_size_poll()
 
     %{
       mode: :normal,
@@ -31,6 +32,19 @@ defmodule Doer.Home do
       terminal_height: rows
     }
   end
+
+  def handle_info(:poll_size, state) do
+    schedule_size_poll()
+    {rows, cols} = TermUI.Platform.terminal_size()
+
+    if cols != state.terminal_width or rows != state.terminal_height do
+      {%{state | terminal_width: cols, terminal_height: rows} |> adjust_scroll(), []}
+    else
+      state
+    end
+  end
+
+  defp schedule_size_poll, do: Process.send_after(self(), :poll_size, 200)
 
   # --- Event to Msg ---
 
@@ -563,7 +577,7 @@ defmodule Doer.Home do
     lines
     |> Enum.with_index()
     |> Enum.map(fn {line, line_idx} ->
-      padded_line = String.pad_trailing(line, text_area_w)
+      padding = String.duplicate(" ", max(text_area_w - String.length(line), 0))
 
       {pfx, age_text} = if line_idx == 0 do
         {prefix, right_col}
@@ -576,7 +590,8 @@ defmodule Doer.Home do
       row = stack(:horizontal, [
         text(pad_str, nil),
         text(pfx, prefix_style),
-        text(padded_line, text_style),
+        text(line, text_style),
+        text(padding, nil),
         text(age_text, right_style)
       ])
 
