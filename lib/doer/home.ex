@@ -8,7 +8,6 @@ defmodule Doer.Home do
   @pad_y_top 2
   @pad_y_bottom 1
   @pad_x 5
-  @max_content_w 120
   @prefix_w 4  # indicator(2) + checkbox(2)
 
   # --- Init ---
@@ -464,7 +463,7 @@ defmodule Doer.Home do
   # --- Private: Layout ---
 
   defp content_width(tw) do
-    min(tw - 2 * @pad_x, @max_content_w) |> max(20)
+    max(tw - 2 * @pad_x, 20)
   end
 
   defp blank_rows(0), do: []
