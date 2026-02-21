@@ -567,19 +567,21 @@ defmodule Doer.Home do
     lines
     |> Enum.with_index()
     |> Enum.map(fn {line, line_idx} ->
-      {pfx, right} = if line_idx == 0 do
-        padded_line = String.pad_trailing(line, text_area_w)
-        {prefix, padded_line <> right_col}
+      padded_line = String.pad_trailing(line, text_area_w)
+
+      {pfx, age_text} = if line_idx == 0 do
+        {prefix, right_col}
       else
-        padded_line = String.pad_trailing(line, text_area_w)
-        {continuation_prefix, padded_line <> String.duplicate(" ", right_w)}
+        {continuation_prefix, String.duplicate(" ", right_w)}
       end
+
+      prefix_style = if(line_idx == 0 and is_selected, do: Style.new(fg: :magenta), else: nil)
 
       row = stack(:horizontal, [
         text(pad_str, nil),
-        text(pfx, if(line_idx == 0 and is_selected, do: Style.new(fg: :magenta), else: nil)),
-        text(right, text_style),
-        text(" ", right_style)
+        text(pfx, prefix_style),
+        text(padded_line, text_style),
+        text(age_text, right_style)
       ])
 
       if cursor_bg, do: styled(row, cursor_bg), else: row
