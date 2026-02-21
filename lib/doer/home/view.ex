@@ -244,9 +244,9 @@ defmodule Doer.Home.View do
         text(pad_str, nil),
         text(mode_text, Style.new(fg: :black, bg: bg_color)),
         text(String.duplicate(" ", left_gap), nil),
-        text(count_text, Style.new(fg: :bright_black)),
+        text(count_text, Style.new(fg: {140, 140, 140})),
         text(String.duplicate(" ", right_gap), nil),
-        text(hint_text, Style.new(fg: :bright_black))
+        text(hint_text, Style.new(fg: {140, 140, 141}))
       ])
     ]
 
