@@ -571,7 +571,7 @@ defmodule Doer.Home do
 
     right_style = Style.new(fg: :bright_black)
 
-    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {:rgb, 55, 51, 84}), else: nil
+    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {55, 51, 84}), else: nil
 
     # Build rows — first line has prefix + text + right-aligned age
     lines
