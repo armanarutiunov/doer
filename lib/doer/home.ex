@@ -571,7 +571,7 @@ defmodule Doer.Home do
 
     right_style = Style.new(fg: :bright_black)
 
-    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: :bright_black, attrs: MapSet.new([:dim])), else: nil
+    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {:rgb, 55, 51, 84}), else: nil
 
     # Build rows — first line has prefix + text + right-aligned age
     lines
@@ -587,15 +587,19 @@ defmodule Doer.Home do
 
       prefix_style = if(line_idx == 0 and is_selected, do: Style.new(fg: :magenta), else: nil)
 
-      row = stack(:horizontal, [
-        text(pad_str, nil),
+      content = stack(:horizontal, [
         text(pfx, prefix_style),
         text(line, text_style),
         text(padding, nil),
         text(age_text, right_style)
       ])
 
-      if cursor_bg, do: styled(row, cursor_bg), else: row
+      content = if cursor_bg, do: styled(content, cursor_bg), else: content
+
+      stack(:horizontal, [
+        text(pad_str, nil),
+        content
+      ])
     end)
   end
 
