@@ -4,3 +4,4 @@
 *.ez
 *.beam
 .elixir_ls/
+/doer
