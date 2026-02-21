@@ -549,7 +549,7 @@ defmodule Doer.Home do
     base = stack(:vertical, all)
 
     if state.show_help do
-      help = render_help(left_pad)
+      help = render_help(state.terminal_width, state.terminal_height)
       stack(:vertical, [base, help])
     else
       base
@@ -769,8 +769,9 @@ defmodule Doer.Home do
     spacer ++ search_line ++ mode_bar ++ [text("", nil)]
   end
 
-  defp render_help(left_pad) do
+  defp render_help(tw, th) do
     lines = [
+      "",
       "Keybindings",
       "",
       "j/k/↑/↓   navigate",
@@ -779,44 +780,43 @@ defmodule Doer.Home do
       "d          delete todo",
       "space      toggle done",
       "v          visual mode",
+      "J/K        reorder (visual)",
       "/          search",
       "G          go to end",
       "g          go to start",
       "ctrl+d     half page down",
       "ctrl+u     half page up",
       "?          toggle help",
-      "q          quit"
+      "q          quit",
+      ""
     ]
 
+    pad_x = 4
     inner_w = 30
-    border_style = Style.new(fg: :bright_black, bg: :black)
-    text_style = Style.new(fg: :white, bg: :black)
-
-    top_border = text("┌" <> String.duplicate("─", inner_w) <> "┐", border_style)
-    bottom_border = text("└" <> String.duplicate("─", inner_w) <> "┘", border_style)
+    box_w = inner_w + pad_x * 2
+    box_h = length(lines)
+    style = Style.new(fg: :white, bg: {65, 65, 72})
+    side = String.duplicate(" ", pad_x)
 
     content_rows =
-      Enum.map(lines, fn line ->
-        padded = String.pad_trailing(" " <> line, inner_w)
-
-        stack(:horizontal, [
-          text("│", border_style),
-          text(padded, text_style),
-          text("│", border_style)
-        ])
+      lines
+      |> Enum.with_index()
+      |> Enum.map(fn {line, i} ->
+        s = Style.new(fg: :white, bg: {65, 65, 72 + rem(i, 2)})
+        text(side <> String.pad_trailing(line, inner_w) <> side, s)
       end)
 
-    help_content = stack(:vertical, [top_border] ++ content_rows ++ [bottom_border])
+    help_content = stack(:vertical, content_rows)
 
     %{
       type: :overlay,
       content: help_content,
-      x: left_pad,
-      y: @pad_y_top,
+      x: max(div(tw - box_w, 2), 0),
+      y: max(div(th - box_h, 2), 0),
       z: 100,
-      width: inner_w + 2,
-      height: length(lines) + 2,
-      bg: Style.new(bg: :black)
+      width: box_w,
+      height: box_h,
+      bg: nil
     }
   end
 
