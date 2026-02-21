@@ -5,7 +5,8 @@ defmodule Doer.Home do
   alias TermUI.Renderer.Style
   alias Doer.{Todo, Store}
 
-  @pad_y 2
+  @pad_y_top 2
+  @pad_y_bottom 1
   @pad_x 5
   @max_content_w 120
   @prefix_w 4  # indicator(2) + checkbox(2)
@@ -424,7 +425,7 @@ defmodule Doer.Home do
     pad_str = String.duplicate(" ", left_pad)
 
     # Top padding
-    top_pad = blank_rows(@pad_y)
+    top_pad = blank_rows(@pad_y_top)
 
     # Todo list rows
     list_rows = render_list(state, content_w, pad_str)
@@ -436,11 +437,11 @@ defmodule Doer.Home do
     # Layout: top_pad + list + spacer + bottom + bottom_pad
     content_row_count = count_rows(list_rows)
     bottom_row_count = length(bottom_rows)
-    used = @pad_y + content_row_count + bottom_row_count + @pad_y
+    used = @pad_y_top + content_row_count + bottom_row_count + @pad_y_bottom
     spacer_h = max(state.terminal_height - used, 0)
     spacer = blank_rows(spacer_h)
 
-    bottom_pad = blank_rows(@pad_y)
+    bottom_pad = blank_rows(@pad_y_bottom)
 
     all = top_pad ++ list_rows ++ spacer ++ bottom_rows ++ bottom_pad
     base = stack(:vertical, all)
@@ -488,7 +489,7 @@ defmodule Doer.Home do
       |> Enum.with_index()
       |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, false, content_w, pad_str) end)
 
-    section_spacing = if length(disp_completed) > 0, do: blank_rows(@pad_y), else: []
+    section_spacing = if length(disp_completed) > 0, do: blank_rows(2), else: []
 
     completed_header = if length(disp_completed) > 0 do
       [render_section_header("Completed", "Created  Completed", content_w, pad_str)]
@@ -646,7 +647,7 @@ defmodule Doer.Home do
       type: :overlay,
       content: help_content,
       x: left_pad,
-      y: @pad_y,
+      y: @pad_y_top,
       z: 100,
       width: 35,
       height: length(lines) + 2,
