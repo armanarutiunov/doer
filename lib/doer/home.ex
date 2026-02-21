@@ -160,7 +160,7 @@ defmodule Doer.Home do
   # --- Update ---
 
   def update({:resize, w, h}, state),
-    do: {%{state | terminal_width: w, terminal_height: h}}
+    do: {%{state | terminal_width: w, terminal_height: h} |> adjust_scroll()}
 
   def update(:quit, state) do
     Store.save(state.todos)
