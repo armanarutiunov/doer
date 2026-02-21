@@ -2,6 +2,26 @@
 
 A vim-flavoured terminal todo app built with Elixir.
 
+## Install
+
+### Homebrew
+
+```sh
+brew install armanarutiunov/doer/doer
+```
+
+### From source
+
+Requires Elixir and Erlang.
+
+```sh
+git clone https://github.com/armanarutiunov/doer.git
+cd doer
+mix deps.get
+mix escript.build
+mv doer /usr/local/bin/
+```
+
 ## Keybindings
 
 ### Normal mode
