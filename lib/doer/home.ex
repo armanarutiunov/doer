@@ -588,7 +588,7 @@ defmodule Doer.Home do
     end)
   end
 
-  defp render_bottom(state, content_w, pad_str) do
+  defp render_bottom(state, _content_w, pad_str) do
     search_bar = if state.mode in [:search, :search_nav] do
       search_text = "/" <> state.search_text <> "█"
       [text(pad_str <> search_text, Style.new(fg: :white))]
@@ -604,9 +604,17 @@ defmodule Doer.Home do
       :search_nav -> {"SEARCH", :yellow}
     end
 
-    mode_label = " -- #{label} -- "
-    padded_label = String.pad_trailing(mode_label, content_w)
-    mode_bar = [text(pad_str <> padded_label, Style.new(fg: :black, bg: bg_color))]
+    hint = if state.mode == :normal and not state.show_help,
+      do: text("  ? for help", Style.new(fg: :bright_black)),
+      else: text("", nil)
+
+    mode_bar = [stack(:horizontal, [
+      text(pad_str, nil),
+      text(" -- ", Style.new(fg: :bright_black)),
+      text(" #{label} ", Style.new(fg: :black, bg: bg_color)),
+      text(" -- ", Style.new(fg: :bright_black)),
+      hint
+    ])]
 
     search_bar ++ mode_bar
   end
