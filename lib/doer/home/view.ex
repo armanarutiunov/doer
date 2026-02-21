@@ -44,6 +44,11 @@ defmodule Doer.Home.View do
     end
   end
 
+  # Offset RGB blue channel by 1 per row to prevent terminal renderer
+  # from merging adjacent cells with identical styles during scroll
+  defp unique_rgb({r, g, b}, idx) when b >= 255, do: {r, g, b - rem(idx, 2)}
+  defp unique_rgb({r, g, b}, idx), do: {r, g, b + rem(idx, 2)}
+
   def content_width(tw) do
     max(trunc(tw * 0.6), 20)
   end
@@ -101,7 +106,7 @@ defmodule Doer.Home.View do
   end
 
   def render_section_header(title, date_label, content_w, pad_str, idx \\ 0) do
-    dim = Style.new(fg: {100, 100, 100 + rem(idx, 2)})
+    dim = Style.new(fg: unique_rgb({100, 100, 100}, idx))
     prefix = String.duplicate(" ", Home.prefix_w())
     date_w = String.length(date_label)
     title_w = content_w - Home.prefix_w() - date_w - 2
@@ -159,12 +164,12 @@ defmodule Doer.Home.View do
     text_style =
       cond do
         is_editing -> Style.new(fg: :green)
-        is_completed -> Style.new(fg: {80, 80, 80 + rem(idx, 2)}, attrs: [:strikethrough])
+        is_completed -> Style.new(fg: unique_rgb({80, 80, 80}, idx), attrs: [:strikethrough])
         is_cursor -> Style.new(fg: :white, attrs: [:bold])
         true -> nil
       end
 
-    right_style = Style.new(fg: :bright_black)
+    right_style = Style.new(fg: unique_rgb({140, 140, 140}, idx))
 
     cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {55, 51, 84}), else: nil
 
@@ -181,7 +186,7 @@ defmodule Doer.Home.View do
           {continuation_prefix, String.duplicate(" ", right_w)}
         end
 
-      prefix_style = if(line_idx == 0 and is_selected, do: Style.new(fg: :magenta), else: nil)
+      prefix_style = if(line_idx == 0 and is_selected, do: Style.new(fg: unique_rgb({255, 122, 178}, idx)), else: nil)
 
       content =
         stack(:horizontal, [
@@ -244,9 +249,9 @@ defmodule Doer.Home.View do
         text(pad_str, nil),
         text(mode_text, Style.new(fg: :black, bg: bg_color)),
         text(String.duplicate(" ", left_gap), nil),
-        text(count_text, Style.new(fg: {140, 140, 140})),
+        text(count_text, Style.new(fg: unique_rgb({140, 140, 140}, 0))),
         text(String.duplicate(" ", right_gap), nil),
-        text(hint_text, Style.new(fg: {140, 140, 141}))
+        text(hint_text, Style.new(fg: unique_rgb({140, 140, 140}, 1)))
       ])
     ]
 
