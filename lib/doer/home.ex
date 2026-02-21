@@ -5,7 +5,7 @@ defmodule Doer.Home do
   alias Doer.Home.Helpers
 
   @pad_y_top 1
-  @bottom_reserved 4
+  @bottom_reserved 5
   @scroll_margin 5
   @prefix_w 4
 

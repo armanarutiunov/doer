@@ -17,16 +17,20 @@ defmodule Doer.Home.View do
     list_rows = render_list(state, content_w, pad_str)
     vh = max(state.terminal_height - Home.pad_y_top() - Home.bottom_reserved(), 1)
 
+    # Clamp scroll so we don't over-scroll past content
+    max_offset = max(length(list_rows) - vh, 0)
+    scroll = min(state.scroll_offset, max_offset)
+
     visible_rows =
       list_rows
-      |> Enum.drop(state.scroll_offset)
+      |> Enum.drop(scroll)
       |> Enum.take(vh)
 
-    # Pad with blank rows if content is shorter than viewport
+    # Pad to push bottom section to the bottom when content is short
     pad_count = vh - length(visible_rows)
     visible_pad = if pad_count > 0, do: blank_rows(pad_count), else: []
 
-    # Bottom section: spacer + search/empty + mode bar
+    # Bottom section: spacer + search/empty + blank + mode bar
     bottom_rows = render_bottom(state, content_w, pad_str)
 
     all = top_pad ++ visible_rows ++ visible_pad ++ bottom_rows
@@ -246,7 +250,7 @@ defmodule Doer.Home.View do
       ])
     ]
 
-    spacer ++ search_line ++ mode_bar ++ [text("", nil)]
+    spacer ++ search_line ++ [text("", nil)] ++ mode_bar ++ [text("", nil)]
   end
 
   def render_help(tw, th) do
