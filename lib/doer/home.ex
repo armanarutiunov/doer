@@ -7,7 +7,8 @@ defmodule Doer.Home do
 
   @pad_y_top 1
   @pad_y_bottom 1
-  @prefix_w 4  # indicator(2) + checkbox(2)
+  # indicator(2) + checkbox(2)
+  @prefix_w 4
 
   # --- Init ---
 
@@ -112,8 +113,9 @@ defmodule Doer.Home do
   def event_to_msg(%Event.Key{key: :backspace}, %{mode: :insert}),
     do: {:msg, :backspace}
 
-  def event_to_msg(%Event.Key{key: key}, %{mode: :insert}) when is_binary(key) and byte_size(key) == 1,
-    do: {:msg, {:type_char, key}}
+  def event_to_msg(%Event.Key{key: key}, %{mode: :insert})
+      when is_binary(key) and byte_size(key) == 1,
+      do: {:msg, {:type_char, key}}
 
   # Visual mode — ctrl combos first
   def event_to_msg(%Event.Key{key: key, modifiers: [:ctrl]}, %{mode: :visual})
@@ -125,10 +127,10 @@ defmodule Doer.Home do
       do: {:msg, :move_selected_up}
 
   def event_to_msg(%Event.Key{key: "J", modifiers: []}, %{mode: :visual}),
-      do: {:msg, :move_selected_down}
+    do: {:msg, :move_selected_down}
 
   def event_to_msg(%Event.Key{key: "K", modifiers: []}, %{mode: :visual}),
-      do: {:msg, :move_selected_up}
+    do: {:msg, :move_selected_up}
 
   def event_to_msg(%Event.Key{key: key, modifiers: []}, %{mode: :visual})
       when key in ["j", :down],
@@ -157,8 +159,9 @@ defmodule Doer.Home do
   def event_to_msg(%Event.Key{key: :backspace}, %{mode: :search}),
     do: {:msg, :search_backspace}
 
-  def event_to_msg(%Event.Key{key: key}, %{mode: :search}) when is_binary(key) and byte_size(key) == 1,
-    do: {:msg, {:search_type, key}}
+  def event_to_msg(%Event.Key{key: key}, %{mode: :search})
+      when is_binary(key) and byte_size(key) == 1,
+      do: {:msg, {:search_type, key}}
 
   # Search nav mode
   def event_to_msg(%Event.Key{key: key, modifiers: []}, %{mode: :search_nav})
@@ -226,79 +229,122 @@ defmodule Doer.Home do
     completed = Enum.filter(state.todos, & &1.done)
     new_todos = before ++ [new_todo] ++ after_list ++ completed
 
-    {%{state |
-      mode: :insert,
-      todos: new_todos,
-      cursor: insert_pos,
-      editing_id: nil,
-      editing_text: "",
-      editing_original: ""
-    } |> adjust_scroll()}
+    {%{
+       state
+       | mode: :insert,
+         todos: new_todos,
+         cursor: insert_pos,
+         editing_id: nil,
+         editing_text: "",
+         editing_original: ""
+     }
+     |> adjust_scroll()}
   end
 
   # Edit todo
   def update(:edit_todo, state) do
     combined = combined_list(state)
+
     case Enum.at(combined, state.cursor) do
-      nil -> :noreply
+      nil ->
+        :noreply
+
       todo ->
-        {%{state |
-          mode: :insert,
-          editing_id: todo.id,
-          editing_text: todo.text,
-          editing_original: todo.text
-        }}
+        {%{
+           state
+           | mode: :insert,
+             editing_id: todo.id,
+             editing_text: todo.text,
+             editing_original: todo.text
+         }}
     end
   end
 
   # Confirm edit
   def update(:confirm_edit, state) do
-    state = if state.editing_id == nil do
-      # New todo via 'a'
-      if String.trim(state.editing_text) == "" do
-        active = Enum.filter(state.todos, &(!&1.done))
-        todo = Enum.at(active, state.cursor)
-        %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}
+    state =
+      if state.editing_id == nil do
+        # New todo via 'a'
+        if String.trim(state.editing_text) == "" do
+          active = Enum.filter(state.todos, &(!&1.done))
+          todo = Enum.at(active, state.cursor)
+          %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}
+        else
+          active = Enum.filter(state.todos, &(!&1.done))
+          todo = Enum.at(active, state.cursor)
+
+          todos =
+            Enum.map(state.todos, fn t ->
+              if t.id == todo.id, do: %{t | text: state.editing_text}, else: t
+            end)
+
+          %{state | todos: todos}
+        end
       else
-        active = Enum.filter(state.todos, &(!&1.done))
-        todo = Enum.at(active, state.cursor)
-        todos = Enum.map(state.todos, fn t ->
-          if t.id == todo.id, do: %{t | text: state.editing_text}, else: t
-        end)
-        %{state | todos: todos}
+        if String.trim(state.editing_text) == "" do
+          %{
+            state
+            | todos:
+                Enum.map(state.todos, fn t ->
+                  if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
+                end)
+          }
+        else
+          %{
+            state
+            | todos:
+                Enum.map(state.todos, fn t ->
+                  if t.id == state.editing_id, do: %{t | text: state.editing_text}, else: t
+                end)
+          }
+        end
       end
-    else
-      if String.trim(state.editing_text) == "" do
-        %{state | todos: Enum.map(state.todos, fn t ->
-          if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
-        end)}
-      else
-        %{state | todos: Enum.map(state.todos, fn t ->
-          if t.id == state.editing_id, do: %{t | text: state.editing_text}, else: t
-        end)}
-      end
-    end
 
     cursor = clamp_cursor(state.cursor, state.todos)
-    state = %{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""} |> adjust_scroll()
+
+    state =
+      %{
+        state
+        | mode: :normal,
+          cursor: cursor,
+          editing_id: nil,
+          editing_text: "",
+          editing_original: ""
+      }
+      |> adjust_scroll()
+
     Store.save(state.todos)
     {state}
   end
 
   # Cancel edit
   def update(:cancel_edit, state) do
-    state = if state.editing_id == nil do
-      active = Enum.filter(state.todos, &(!&1.done))
-      todo = Enum.at(active, state.cursor)
-      if todo, do: %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}, else: state
-    else
-      %{state | todos: Enum.map(state.todos, fn t ->
-        if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
-      end)}
-    end
+    state =
+      if state.editing_id == nil do
+        active = Enum.filter(state.todos, &(!&1.done))
+        todo = Enum.at(active, state.cursor)
+        if todo, do: %{state | todos: Enum.reject(state.todos, &(&1.id == todo.id))}, else: state
+      else
+        %{
+          state
+          | todos:
+              Enum.map(state.todos, fn t ->
+                if t.id == state.editing_id, do: %{t | text: state.editing_original}, else: t
+              end)
+        }
+      end
 
     cursor = clamp_cursor(state.cursor, state.todos)
-    {%{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""} |> adjust_scroll()}
+
+    {%{
+       state
+       | mode: :normal,
+         cursor: cursor,
+         editing_id: nil,
+         editing_text: "",
+         editing_original: ""
+     }
+     |> adjust_scroll()}
   end
 
   def update(:backspace, state) do
@@ -313,8 +359,11 @@ defmodule Doer.Home do
   # Delete
   def update(:delete_todo, state) do
     combined = combined_list(state)
+
     case Enum.at(combined, state.cursor) do
-      nil -> :noreply
+      nil ->
+        :noreply
+
       todo ->
         todos = Enum.reject(state.todos, &(&1.id == todo.id))
         cursor = clamp_cursor(state.cursor, todos)
@@ -326,12 +375,17 @@ defmodule Doer.Home do
   # Toggle
   def update(:toggle_todo, state) do
     combined = combined_list(state)
+
     case Enum.at(combined, state.cursor) do
-      nil -> :noreply
+      nil ->
+        :noreply
+
       todo ->
-        todos = Enum.map(state.todos, fn t ->
-          if t.id == todo.id, do: Todo.toggle(t), else: t
-        end)
+        todos =
+          Enum.map(state.todos, fn t ->
+            if t.id == todo.id, do: Todo.toggle(t), else: t
+          end)
+
         Store.save(todos)
         {%{state | todos: todos}}
     end
@@ -363,9 +417,12 @@ defmodule Doer.Home do
 
   def update(:toggle_selected, state) do
     selected_ids = selected_todo_ids(state)
-    todos = Enum.map(state.todos, fn t ->
-      if t.id in selected_ids, do: Todo.toggle(t), else: t
-    end)
+
+    todos =
+      Enum.map(state.todos, fn t ->
+        if t.id in selected_ids, do: Todo.toggle(t), else: t
+      end)
+
     Store.save(todos)
     {%{state | mode: :normal, todos: todos} |> adjust_scroll()}
   end
@@ -376,17 +433,27 @@ defmodule Doer.Home do
 
     if sel_max < length(active) - 1 do
       active_list = Enum.with_index(active)
-      {selected, rest} = Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
+
+      {selected, rest} =
+        Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
+
       {before_swap, [swap_item | after_swap]} = Enum.split(rest, sel_min)
 
       new_active =
         Enum.map(before_swap, &elem(&1, 0)) ++
-        [elem(swap_item, 0)] ++
-        Enum.map(selected, &elem(&1, 0)) ++
-        Enum.map(after_swap, &elem(&1, 0))
+          [elem(swap_item, 0)] ++
+          Enum.map(selected, &elem(&1, 0)) ++
+          Enum.map(after_swap, &elem(&1, 0))
 
       completed = Enum.filter(state.todos, & &1.done)
-      {%{state | todos: new_active ++ completed, cursor: state.cursor + 1, visual_anchor: state.visual_anchor + 1} |> adjust_scroll()}
+
+      {%{
+         state
+         | todos: new_active ++ completed,
+           cursor: state.cursor + 1,
+           visual_anchor: state.visual_anchor + 1
+       }
+       |> adjust_scroll()}
     else
       :noreply
     end
@@ -398,16 +465,28 @@ defmodule Doer.Home do
 
     if sel_min > 0 do
       active_list = Enum.with_index(active)
-      {selected, rest} = Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= elem(selection_range(state), 1) end)
+
+      {selected, rest} =
+        Enum.split_with(active_list, fn {_, i} ->
+          i >= sel_min and i <= elem(selection_range(state), 1)
+        end)
+
       {before, after_list} = Enum.split(rest, sel_min - 1)
 
       new_active =
         Enum.map(before, &elem(&1, 0)) ++
-        Enum.map(selected, &elem(&1, 0)) ++
-        Enum.map(after_list, &elem(&1, 0))
+          Enum.map(selected, &elem(&1, 0)) ++
+          Enum.map(after_list, &elem(&1, 0))
 
       completed = Enum.filter(state.todos, & &1.done)
-      {%{state | todos: new_active ++ completed, cursor: state.cursor - 1, visual_anchor: state.visual_anchor - 1} |> adjust_scroll()}
+
+      {%{
+         state
+         | todos: new_active ++ completed,
+           cursor: state.cursor - 1,
+           visual_anchor: state.visual_anchor - 1
+       }
+       |> adjust_scroll()}
     else
       :noreply
     end
@@ -419,7 +498,9 @@ defmodule Doer.Home do
 
   def update(:confirm_search, state) do
     matches = filter_todos(state.todos, state.search_text)
-    {%{state | mode: :search_nav, search_matches: Enum.map(matches, & &1.id), cursor: 0} |> adjust_scroll()}
+
+    {%{state | mode: :search_nav, search_matches: Enum.map(matches, & &1.id), cursor: 0}
+     |> adjust_scroll()}
   end
 
   def update(:cancel_search, state),
@@ -497,34 +578,47 @@ defmodule Doer.Home do
     active_header = [render_section_header("Todos", "Created", content_w, pad_str)]
     active_header_spacing = blank_rows(1)
 
-    active_rows = if length(disp_active) == 0 do
-      empty_style = Style.new(fg: :bright_black)
-      [stack(:horizontal, [
-        text(pad_str, nil),
-        text(String.duplicate(" ", @prefix_w), nil),
-        text("press a to add a new todo", empty_style)
-      ])]
-    else
-      disp_active
-      |> Enum.with_index()
-      |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, false, content_w, pad_str) end)
-    end
+    active_rows =
+      if length(disp_active) == 0 do
+        empty_style = Style.new(fg: :bright_black)
+
+        [
+          stack(:horizontal, [
+            text(pad_str, nil),
+            text(String.duplicate(" ", @prefix_w), nil),
+            text("press 'a' to add a new todo", empty_style)
+          ])
+        ]
+      else
+        disp_active
+        |> Enum.with_index()
+        |> Enum.flat_map(fn {todo, idx} ->
+          render_todo_row(todo, idx, state, false, content_w, pad_str)
+        end)
+      end
 
     section_spacing = if length(disp_completed) > 0, do: blank_rows(2), else: []
 
-    completed_header = if length(disp_completed) > 0 do
-      [render_section_header("Completed", "Created  Completed", content_w, pad_str)]
-    else
-      []
-    end
+    completed_header =
+      if length(disp_completed) > 0 do
+        [render_section_header("Completed", "Created  Completed", content_w, pad_str)]
+      else
+        []
+      end
 
     spacing_above_completed = if length(disp_completed) > 0, do: blank_rows(1), else: []
 
-    completed_rows = disp_completed
+    completed_rows =
+      disp_completed
       |> Enum.with_index(length(disp_active))
-      |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, true, content_w, pad_str) end)
+      |> Enum.flat_map(fn {todo, idx} ->
+        render_todo_row(todo, idx, state, true, content_w, pad_str)
+      end)
 
-    active_header ++ active_header_spacing ++ active_rows ++ section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
+    active_header ++
+      active_header_spacing ++
+      active_rows ++
+      section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
   end
 
   defp render_section_header(title, date_label, content_w, pad_str) do
@@ -545,17 +639,26 @@ defmodule Doer.Home do
   defp render_todo_row(todo, idx, state, is_completed, content_w, pad_str) do
     is_cursor = idx == state.cursor
     is_selected = state.mode == :visual and idx in visual_range(state)
-    is_editing = state.mode == :insert and
-      ((state.editing_id == nil and idx == state.cursor) or
-       (state.editing_id == todo.id))
+
+    is_editing =
+      state.mode == :insert and
+        ((state.editing_id == nil and idx == state.cursor) or
+           state.editing_id == todo.id)
 
     # Determine age strings
     age_str = Todo.age_label(todo)
-    completed_age_str = if is_completed and todo.completed_at, do: Todo.completed_label(todo), else: nil
+
+    completed_age_str =
+      if is_completed and todo.completed_at, do: Todo.completed_label(todo), else: nil
 
     # Right column: aligned with "Created" (7) or "Created  Completed" (7+2+9)
     right_col = "  " <> String.pad_leading(age_str, 7)
-    right_col = if completed_age_str, do: right_col <> "  " <> String.pad_leading(completed_age_str, 9), else: right_col
+
+    right_col =
+      if completed_age_str,
+        do: right_col <> "  " <> String.pad_leading(completed_age_str, 9),
+        else: right_col
+
     right_w = String.length(right_col)
 
     # Available width for text (after indicator + checkbox, before age)
@@ -574,12 +677,13 @@ defmodule Doer.Home do
     continuation_prefix = String.duplicate(" ", @prefix_w)
 
     # Style
-    text_style = cond do
-      is_editing -> Style.new(fg: :green)
-      is_completed -> Style.new(fg: :bright_black, attrs: MapSet.new([:strikethrough]))
-      is_cursor -> Style.new(fg: :white, attrs: MapSet.new([:bold]))
-      true -> nil
-    end
+    text_style =
+      cond do
+        is_editing -> Style.new(fg: :green)
+        is_completed -> Style.new(fg: :bright_black, attrs: MapSet.new([:strikethrough]))
+        is_cursor -> Style.new(fg: :white, attrs: MapSet.new([:bold]))
+        true -> nil
+      end
 
     right_style = Style.new(fg: :bright_black)
 
@@ -591,20 +695,22 @@ defmodule Doer.Home do
     |> Enum.map(fn {line, line_idx} ->
       padding = String.duplicate(" ", max(text_area_w - String.length(line), 0))
 
-      {pfx, age_text} = if line_idx == 0 do
-        {prefix, right_col}
-      else
-        {continuation_prefix, String.duplicate(" ", right_w)}
-      end
+      {pfx, age_text} =
+        if line_idx == 0 do
+          {prefix, right_col}
+        else
+          {continuation_prefix, String.duplicate(" ", right_w)}
+        end
 
       prefix_style = if(line_idx == 0 and is_selected, do: Style.new(fg: :magenta), else: nil)
 
-      content = stack(:horizontal, [
-        text(pfx, prefix_style),
-        text(line, text_style),
-        text(padding, nil),
-        text(age_text, right_style)
-      ])
+      content =
+        stack(:horizontal, [
+          text(pfx, prefix_style),
+          text(line, text_style),
+          text(padding, nil),
+          text(age_text, right_style)
+        ])
 
       content = if cursor_bg, do: styled(content, cursor_bg), else: content
 
@@ -616,20 +722,22 @@ defmodule Doer.Home do
   end
 
   defp render_bottom(state, content_w, pad_str) do
-    search_bar = if state.mode in [:search, :search_nav] do
-      search_text = "/" <> state.search_text <> "█"
-      [text(pad_str <> search_text, Style.new(fg: :white))]
-    else
-      []
-    end
+    search_bar =
+      if state.mode in [:search, :search_nav] do
+        search_text = "/" <> state.search_text <> "█"
+        [text(pad_str <> search_text, Style.new(fg: :white))]
+      else
+        []
+      end
 
-    {label, bg_color} = case state.mode do
-      :normal -> {"NORMAL", :blue}
-      :visual -> {"VISUAL", :magenta}
-      :insert -> {"INSERT", :green}
-      :search -> {"SEARCH", :yellow}
-      :search_nav -> {"SEARCH", :yellow}
-    end
+    {label, bg_color} =
+      case state.mode do
+        :normal -> {"NORMAL", :blue}
+        :visual -> {"VISUAL", :magenta}
+        :insert -> {"INSERT", :green}
+        :search -> {"SEARCH", :yellow}
+        :search_nav -> {"SEARCH", :yellow}
+      end
 
     mode_text = " #{label} "
     mode_w = String.length(mode_text)
@@ -649,14 +757,16 @@ defmodule Doer.Home do
     left_gap = div(remaining, 2)
     right_gap = remaining - left_gap
 
-    mode_bar = [stack(:horizontal, [
-      text(pad_str, nil),
-      text(mode_text, Style.new(fg: :black, bg: bg_color)),
-      text(String.duplicate(" ", left_gap), nil),
-      text(count_text, Style.new(fg: :bright_black)),
-      text(String.duplicate(" ", right_gap), nil),
-      text(hint_text, Style.new(fg: :bright_black))
-    ])]
+    mode_bar = [
+      stack(:horizontal, [
+        text(pad_str, nil),
+        text(mode_text, Style.new(fg: :black, bg: bg_color)),
+        text(String.duplicate(" ", left_gap), nil),
+        text(count_text, Style.new(fg: :bright_black)),
+        text(String.duplicate(" ", right_gap), nil),
+        text(hint_text, Style.new(fg: :bright_black))
+      ])
+    ]
 
     search_bar ++ mode_bar
   end
@@ -687,14 +797,16 @@ defmodule Doer.Home do
     top_border = text("┌" <> String.duplicate("─", inner_w) <> "┐", border_style)
     bottom_border = text("└" <> String.duplicate("─", inner_w) <> "┘", border_style)
 
-    content_rows = Enum.map(lines, fn line ->
-      padded = String.pad_trailing(" " <> line, inner_w)
-      stack(:horizontal, [
-        text("│", border_style),
-        text(padded, text_style),
-        text("│", border_style)
-      ])
-    end)
+    content_rows =
+      Enum.map(lines, fn line ->
+        padded = String.pad_trailing(" " <> line, inner_w)
+
+        stack(:horizontal, [
+          text("│", border_style),
+          text(padded, text_style),
+          text("│", border_style)
+        ])
+      end)
 
     help_content = stack(:vertical, [top_border] ++ content_rows ++ [bottom_border])
 
@@ -736,6 +848,7 @@ defmodule Doer.Home do
 
   defp do_wrap([word | rest], width, lines, current) do
     candidate = current <> " " <> word
+
     if String.length(candidate) <= width do
       do_wrap(rest, width, lines, candidate)
     else
@@ -766,6 +879,7 @@ defmodule Doer.Home do
       mode when mode in [:search, :search_nav] and state.search_text != "" ->
         filtered = filter_todos(state.todos, state.search_text)
         {Enum.filter(filtered, &(!&1.done)), Enum.filter(filtered, & &1.done)}
+
       _ ->
         {active, completed}
     end
@@ -833,6 +947,7 @@ defmodule Doer.Home do
 
   defp selected_todo_ids(state) do
     combined = combined_list(state)
+
     visual_range(state)
     |> Enum.map(&Enum.at(combined, &1))
     |> Enum.reject(&is_nil/1)
@@ -841,6 +956,7 @@ defmodule Doer.Home do
 
   defp filter_todos(todos, query) do
     q = String.downcase(query)
+
     Enum.filter(todos, fn t ->
       String.contains?(String.downcase(t.text), q)
     end)
