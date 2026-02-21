@@ -6,6 +6,8 @@ defmodule Doer.Home do
   alias Doer.{Todo, Store}
 
   @pad_y 2
+  @pad_x 5
+  @max_content_w 120
   @prefix_w 4  # indicator(2) + checkbox(2)
 
   # --- Init ---
@@ -454,14 +456,7 @@ defmodule Doer.Home do
   # --- Private: Layout ---
 
   defp content_width(tw) do
-    pct = cond do
-      tw >= 160 -> 0.60
-      tw >= 120 -> 0.65
-      tw >= 100 -> 0.70
-      tw >= 80 -> 0.75
-      true -> 0.80
-    end
-    max(trunc(tw * pct), 20)
+    min(tw - 2 * @pad_x, @max_content_w) |> max(20)
   end
 
   defp blank_rows(0), do: []
