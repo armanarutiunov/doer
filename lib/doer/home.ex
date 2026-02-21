@@ -14,6 +14,7 @@ defmodule Doer.Home do
 
   def init(_opts) do
     todos = Store.load()
+    {rows, cols} = TermUI.Platform.terminal_size()
 
     %{
       mode: :normal,
@@ -27,8 +28,8 @@ defmodule Doer.Home do
       search_matches: [],
       show_help: false,
       scroll_offset: 0,
-      terminal_width: 80,
-      terminal_height: 24
+      terminal_width: cols,
+      terminal_height: rows
     }
   end
 
