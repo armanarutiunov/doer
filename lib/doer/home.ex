@@ -6,7 +6,8 @@ defmodule Doer.Home do
   alias Doer.{Todo, Store}
 
   @pad_y_top 1
-  @pad_y_bottom 1
+  @bottom_reserved 4  # spacer + search line + mode bar + bottom padding
+  @scroll_margin 5
   # indicator(2) + checkbox(2)
   @prefix_w 4
 
@@ -528,29 +529,23 @@ defmodule Doer.Home do
     # Top padding
     top_pad = blank_rows(@pad_y_top)
 
-    # Todo list rows
+    # Todo list rows — slice visible range directly (no viewport)
     list_rows = render_list(state, content_w, pad_str)
-    list_content = stack(:vertical, list_rows)
+    vh = max(state.terminal_height - @pad_y_top - @bottom_reserved, 1)
 
-    # Bottom section: search bar + mode bar
+    visible_rows =
+      list_rows
+      |> Enum.drop(state.scroll_offset)
+      |> Enum.take(vh)
+
+    # Pad with blank rows if content is shorter than viewport
+    pad_count = vh - length(visible_rows)
+    visible_pad = if pad_count > 0, do: blank_rows(pad_count), else: []
+
+    # Bottom section: spacer + search/empty + mode bar
     bottom_rows = render_bottom(state, content_w, pad_str)
-    bottom_row_count = if state.mode in [:search, :search_nav], do: 2, else: 1
 
-    # Viewport for scrollable list
-    vh = max(state.terminal_height - @pad_y_top - bottom_row_count - @pad_y_bottom, 1)
-
-    viewport = %{
-      type: :viewport,
-      content: list_content,
-      scroll_x: 0,
-      scroll_y: state.scroll_offset,
-      width: state.terminal_width,
-      height: vh
-    }
-
-    bottom_pad = blank_rows(@pad_y_bottom)
-
-    all = top_pad ++ [viewport] ++ bottom_rows ++ bottom_pad
+    all = top_pad ++ visible_rows ++ visible_pad ++ bottom_rows
     base = stack(:vertical, all)
 
     if state.show_help do
@@ -680,8 +675,8 @@ defmodule Doer.Home do
     text_style =
       cond do
         is_editing -> Style.new(fg: :green)
-        is_completed -> Style.new(fg: :bright_black, attrs: MapSet.new([:strikethrough]))
-        is_cursor -> Style.new(fg: :white, attrs: MapSet.new([:bold]))
+        is_completed -> Style.new(fg: {80, 80, 80 + rem(idx, 2)}, attrs: [:strikethrough])
+        is_cursor -> Style.new(fg: :white, attrs: [:bold])
         true -> nil
       end
 
@@ -722,12 +717,15 @@ defmodule Doer.Home do
   end
 
   defp render_bottom(state, content_w, pad_str) do
-    search_bar =
+    # Always 3 lines: spacer + search_or_empty + mode_bar
+    spacer = [text("", nil)]
+
+    search_line =
       if state.mode in [:search, :search_nav] do
         search_text = "/" <> state.search_text <> "█"
         [text(pad_str <> search_text, Style.new(fg: :white))]
       else
-        []
+        [text("", nil)]
       end
 
     {label, bg_color} =
@@ -768,7 +766,7 @@ defmodule Doer.Home do
       ])
     ]
 
-    search_bar ++ mode_bar
+    spacer ++ search_line ++ mode_bar ++ [text("", nil)]
   end
 
   defp render_help(left_pad) do
@@ -888,18 +886,19 @@ defmodule Doer.Home do
   # --- Private: State helpers ---
 
   defp viewport_height(state) do
-    # bottom bar = 1 (mode) + 1 if searching
-    bottom_rows = if state.mode in [:search, :search_nav], do: 2, else: 1
-    max(state.terminal_height - @pad_y_top - bottom_rows - @pad_y_bottom, 1)
+    max(state.terminal_height - @pad_y_top - @bottom_reserved, 1)
   end
 
   defp adjust_scroll(state) do
     vh = viewport_height(state)
     row = cursor_visual_row(state)
     offset = state.scroll_offset
+    margin = min(@scroll_margin, div(vh, 2))
 
-    offset = if row < offset, do: row, else: offset
-    offset = if row >= offset + vh, do: row - vh + 1, else: offset
+    # Scroll up if cursor is within margin of top edge
+    offset = if row < offset + margin, do: max(row - margin, 0), else: offset
+    # Scroll down if cursor is within margin of bottom edge
+    offset = if row >= offset + vh - margin, do: row - vh + margin + 1, else: offset
     offset = max(offset, 0)
 
     %{state | scroll_offset: offset}
