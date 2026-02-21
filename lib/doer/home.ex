@@ -478,15 +478,20 @@ defmodule Doer.Home do
   defp render_list(state, content_w, pad_str) do
     {disp_active, disp_completed} = display_todos(state)
 
+    active_header = if length(disp_active) > 0 do
+      [render_section_header("Todos", "Created", content_w, pad_str)]
+    else
+      []
+    end
+
     active_rows = disp_active
       |> Enum.with_index()
       |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, false, content_w, pad_str) end)
 
     section_spacing = if length(disp_completed) > 0, do: blank_rows(@pad_y), else: []
 
-    separator = if length(disp_completed) > 0 do
-      sep_text = "─── completed ───"
-      [text(pad_str <> sep_text, Style.new(fg: :bright_black))]
+    completed_header = if length(disp_completed) > 0 do
+      [render_section_header("Completed", "Created  Completed", content_w, pad_str)]
     else
       []
     end
@@ -497,7 +502,22 @@ defmodule Doer.Home do
       |> Enum.with_index(length(disp_active))
       |> Enum.flat_map(fn {todo, idx} -> render_todo_row(todo, idx, state, true, content_w, pad_str) end)
 
-    active_rows ++ section_spacing ++ separator ++ spacing_above_completed ++ completed_rows
+    active_header ++ active_rows ++ section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
+  end
+
+  defp render_section_header(title, date_label, content_w, pad_str) do
+    dim = Style.new(fg: :bright_black)
+    prefix = String.duplicate(" ", @prefix_w)
+    date_w = String.length(date_label)
+    title_w = content_w - @prefix_w - date_w - 2
+    padded_title = String.pad_trailing(title, max(title_w, 0))
+
+    stack(:horizontal, [
+      text(pad_str, nil),
+      text(prefix, nil),
+      text(padded_title, dim),
+      text("  " <> date_label, dim)
+    ])
   end
 
   defp render_todo_row(todo, idx, state, is_completed, content_w, pad_str) do
