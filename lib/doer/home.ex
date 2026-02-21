@@ -596,7 +596,7 @@ defmodule Doer.Home do
 
     completed_header =
       if length(disp_completed) > 0 do
-        [render_section_header("Completed", "Created  Completed", content_w, pad_str)]
+        [render_section_header("Completed", "Created  Completed", content_w, pad_str, 1)]
       else
         []
       end
@@ -616,8 +616,8 @@ defmodule Doer.Home do
       section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
   end
 
-  defp render_section_header(title, date_label, content_w, pad_str) do
-    dim = Style.new(fg: :bright_black)
+  defp render_section_header(title, date_label, content_w, pad_str, idx \\ 0) do
+    dim = Style.new(fg: {100, 100, 100 + rem(idx, 2)})
     prefix = String.duplicate(" ", @prefix_w)
     date_w = String.length(date_label)
     title_w = content_w - @prefix_w - date_w - 2
