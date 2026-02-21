@@ -261,7 +261,7 @@ defmodule Doer.Home do
     end
 
     cursor = clamp_cursor(state.cursor, state.todos)
-    state = %{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""}
+    state = %{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""} |> adjust_scroll()
     Store.save(state.todos)
     {state}
   end
@@ -279,7 +279,7 @@ defmodule Doer.Home do
     end
 
     cursor = clamp_cursor(state.cursor, state.todos)
-    {%{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""}}
+    {%{state | mode: :normal, cursor: cursor, editing_id: nil, editing_text: "", editing_original: ""} |> adjust_scroll()}
   end
 
   def update(:backspace, state) do
@@ -300,7 +300,7 @@ defmodule Doer.Home do
         todos = Enum.reject(state.todos, &(&1.id == todo.id))
         cursor = clamp_cursor(state.cursor, todos)
         Store.save(todos)
-        {%{state | todos: todos, cursor: cursor}}
+        {%{state | todos: todos, cursor: cursor} |> adjust_scroll()}
     end
   end
 
@@ -339,7 +339,7 @@ defmodule Doer.Home do
     todos = Enum.reject(state.todos, &(&1.id in selected_ids))
     cursor = clamp_cursor(state.cursor, todos)
     Store.save(todos)
-    {%{state | mode: :normal, todos: todos, cursor: cursor}}
+    {%{state | mode: :normal, todos: todos, cursor: cursor} |> adjust_scroll()}
   end
 
   def update(:toggle_selected, state) do
@@ -348,7 +348,7 @@ defmodule Doer.Home do
       if t.id in selected_ids, do: Todo.toggle(t), else: t
     end)
     Store.save(todos)
-    {%{state | mode: :normal, todos: todos}}
+    {%{state | mode: :normal, todos: todos} |> adjust_scroll()}
   end
 
   def update(:move_selected_down, state) do
@@ -367,7 +367,7 @@ defmodule Doer.Home do
         Enum.map(after_swap, &elem(&1, 0))
 
       completed = Enum.filter(state.todos, & &1.done)
-      {%{state | todos: new_active ++ completed, cursor: state.cursor + 1, visual_anchor: state.visual_anchor + 1}}
+      {%{state | todos: new_active ++ completed, cursor: state.cursor + 1, visual_anchor: state.visual_anchor + 1} |> adjust_scroll()}
     else
       :noreply
     end
@@ -388,7 +388,7 @@ defmodule Doer.Home do
         Enum.map(after_list, &elem(&1, 0))
 
       completed = Enum.filter(state.todos, & &1.done)
-      {%{state | todos: new_active ++ completed, cursor: state.cursor - 1, visual_anchor: state.visual_anchor - 1}}
+      {%{state | todos: new_active ++ completed, cursor: state.cursor - 1, visual_anchor: state.visual_anchor - 1} |> adjust_scroll()}
     else
       :noreply
     end
