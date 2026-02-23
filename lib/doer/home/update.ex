@@ -22,6 +22,18 @@ defmodule Doer.Home.Update do
             Map.put(acc, pid, todos)
           end)
 
+        # Save empty for projects that had all todos removed
+        project_todos =
+          Enum.reduce(state.project_todos, project_todos, fn {pid, _}, acc ->
+            unless Map.has_key?(project_groups, pid) do
+              project = Enum.find(state.projects, &(&1.id == pid))
+              if project, do: Store.save_project(project, [])
+              Map.put(acc, pid, [])
+            else
+              acc
+            end
+          end)
+
         %{state | project_todos: project_todos}
     end
   end
@@ -36,7 +48,8 @@ defmodule Doer.Home.Update do
 
   def update(:toggle_sidebar, state) do
     if state.sidebar_open do
-      {%{state | sidebar_open: false, focus: :main}}
+      {%{state | sidebar_open: false, focus: :main, sidebar_mode: :normal,
+         sidebar_editing_text: "", sidebar_editing_id: nil, sidebar_confirm_project_id: nil}}
     else
       {%{state | sidebar_open: true, focus: :sidebar}}
     end
@@ -78,19 +91,17 @@ defmodule Doer.Home.Update do
 
   # Add todo
   def update(:add_todo, state) do
-    new_todo = Todo.new("")
-    active = Enum.filter(state.todos, &(!&1.done))
-    insert_pos = min(state.cursor + 1, length(active))
-
-    # Set source for All Todos view context-aware add
     source =
-      if state.current_view == :all do
-        Doer.Home.SidebarUpdate.section_for_cursor(state, min(state.cursor, length(active) - 1))
-      else
-        nil
+      case state.current_view do
+        :all ->
+          active = Enum.filter(state.todos, &(!&1.done))
+          Doer.Home.SidebarUpdate.section_for_cursor(state, min(state.cursor, length(active) - 1))
+        {:project, _} -> nil
       end
 
-    new_todo = %{new_todo | source: source}
+    new_todo = %{Todo.new("") | source: source}
+    active = Enum.filter(state.todos, &(!&1.done))
+    insert_pos = min(state.cursor + 1, length(active))
 
     {before, after_list} = Enum.split(active, insert_pos)
     completed = Enum.filter(state.todos, & &1.done)

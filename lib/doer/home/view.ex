@@ -8,7 +8,7 @@ defmodule Doer.Home.View do
   def view(state) do
     base =
       if state.sidebar_open do
-        available_w = state.terminal_width - Home.sidebar_width()
+        available_w = max(state.terminal_width - Home.sidebar_width() - 1, 10)
         stack(:horizontal, [render_sidebar(state), render_main(state, available_w)])
       else
         render_main(state, state.terminal_width)
@@ -28,6 +28,7 @@ defmodule Doer.Home.View do
     sw = Home.sidebar_width()
     th = state.terminal_height
     items = sidebar_items(state)
+    cursor_vi = sidebar_cursor_to_visual(state, state.sidebar_cursor)
 
     dim = Style.new(fg: :bright_black)
     cursor_bg = Style.new(bg: {55, 51, 84})
@@ -36,12 +37,12 @@ defmodule Doer.Home.View do
       items
       |> Enum.with_index()
       |> Enum.map(fn {item, visual_idx} ->
-        render_sidebar_item(item, visual_idx, state, sw, dim, cursor_bg)
+        render_sidebar_item(item, visual_idx, cursor_vi, state, sw, dim, cursor_bg)
       end)
 
     # Pad to full height
     pad_count = max(th - length(rows), 0)
-    pad_rows = Enum.map(1..max(pad_count, 1), fn _ -> text(String.duplicate(" ", sw), nil) end)
+    pad_rows = if pad_count > 0, do: Enum.map(1..pad_count, fn _ -> text(String.duplicate(" ", sw), nil) end), else: []
 
     border_col = Style.new(fg: {50, 50, 55})
 
@@ -80,23 +81,22 @@ defmodule Doer.Home.View do
     [all_item, blank, header] ++ project_items ++ hint
   end
 
-  defp render_sidebar_item({:blank, _, _}, _vi, _state, sw, _dim, _cursor_bg) do
+  defp render_sidebar_item({:blank, _, _}, _vi, _cvi, _state, sw, _dim, _cursor_bg) do
     text(String.duplicate(" ", sw), nil)
   end
 
-  defp render_sidebar_item({:header, label, _}, vi, _state, sw, dim, _cursor_bg) do
+  defp render_sidebar_item({:header, label, _}, vi, _cvi, _state, sw, dim, _cursor_bg) do
     padded = String.pad_trailing("  " <> label, sw)
     text(padded, %{dim | fg: unique_rgb({100, 100, 100}, vi)})
   end
 
-  defp render_sidebar_item({:hint, label, _}, vi, _state, sw, _dim, _cursor_bg) do
+  defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _cursor_bg) do
     padded = String.pad_trailing("    " <> label, sw)
     text(padded, Style.new(fg: unique_rgb({80, 80, 80}, vi)))
   end
 
-  defp render_sidebar_item({:all, label, _}, vi, state, sw, _dim, cursor_bg) do
-    cursor_idx = sidebar_cursor_to_visual(state, state.sidebar_cursor)
-    is_cursor = vi == cursor_idx and state.focus == :sidebar
+  defp render_sidebar_item({:all, label, _}, vi, cvi, state, sw, _dim, cursor_bg) do
+    is_cursor = vi == cvi and state.focus == :sidebar
     is_selected = state.current_view == :all
 
     style = if is_selected, do: Style.new(fg: :white, attrs: [:bold]), else: nil
@@ -106,9 +106,8 @@ defmodule Doer.Home.View do
     if is_cursor, do: styled(row, cursor_bg), else: row
   end
 
-  defp render_sidebar_item({:project, project, depth}, vi, state, sw, _dim, cursor_bg) do
-    cursor_idx = sidebar_cursor_to_visual(state, state.sidebar_cursor)
-    is_cursor = vi == cursor_idx and state.focus == :sidebar
+  defp render_sidebar_item({:project, project, depth}, vi, cvi, state, sw, _dim, cursor_bg) do
+    is_cursor = vi == cvi and state.focus == :sidebar
     is_selected = state.current_view == {:project, project.id}
 
     indent = String.duplicate("  ", depth + 1)
@@ -255,31 +254,14 @@ defmodule Doer.Home.View do
   end
 
   defp render_sectioned_active(disp_active, state, content_w, pad_str) do
-    active_with_idx = Enum.with_index(disp_active)
-
-    # Group by source, maintaining order
-    groups =
-      active_with_idx
-      |> Enum.chunk_while(
-        nil,
-        fn {todo, idx}, acc ->
-          source = todo.source
-          case acc do
-            nil -> {:cont, {source, [{todo, idx}]}}
-            {^source, items} -> {:cont, {source, items ++ [{todo, idx}]}}
-            {prev_source, items} -> {:cont, {prev_source, items}, {source, [{todo, idx}]}}
-          end
-        end,
-        fn
-          nil -> {:cont, nil}
-          acc -> {:cont, acc, nil}
-        end
-      )
-      |> Enum.reject(&is_nil/1)
-
-    groups
+    disp_active
     |> Enum.with_index()
-    |> Enum.flat_map(fn {{source, items}, group_idx} ->
+    |> Enum.chunk_by(fn {todo, _} -> todo.source end)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {group, group_idx} ->
+      {first_todo, _} = hd(group)
+      source = first_todo.source
+
       label =
         if source do
           project = Enum.find(state.projects, &(&1.id == source))
@@ -288,12 +270,12 @@ defmodule Doer.Home.View do
           "Todos"
         end
 
-      spacing = if group_idx > 0, do: blank_rows(1), else: []
+      spacing = if group_idx > 0, do: blank_rows(2), else: []
       header = [render_section_header(label, "Created", content_w, pad_str, group_idx)]
       header_spacing = blank_rows(1)
 
       rows =
-        Enum.flat_map(items, fn {todo, idx} ->
+        Enum.flat_map(group, fn {todo, idx} ->
           render_todo_row(todo, idx, state, false, content_w, pad_str)
         end)
 
