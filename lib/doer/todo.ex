@@ -1,6 +1,6 @@
 defmodule Doer.Todo do
   @derive {Jason.Encoder, only: [:id, :text, :done, :created_at, :completed_at]}
-  defstruct [:id, :text, :done, :created_at, :completed_at]
+  defstruct [:id, :text, :done, :created_at, :completed_at, :source]
 
   def new(text) do
     %__MODULE__{
