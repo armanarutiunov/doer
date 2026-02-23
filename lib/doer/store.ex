@@ -74,7 +74,6 @@ defmodule Doer.Store do
       "name" => project.name,
       "index" => project.index,
       "parent_id" => project.parent_id,
-      "children_ids" => project.children_ids,
       "todos" => todos
     }
 

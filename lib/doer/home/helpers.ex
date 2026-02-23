@@ -23,16 +23,63 @@ defmodule Doer.Home.Helpers do
     active_count = length(disp_active)
     completed_count = length(disp_completed)
 
-    active_header_rows = 2
+    show_sections =
+      state.current_view == :all and
+        Enum.any?(disp_active, & &1.source) and
+        state.mode not in [:search, :search_nav]
 
     if state.cursor < active_count do
-      active_header_rows + state.cursor
+      if show_sections do
+        section_visual_row(disp_active, state.cursor)
+      else
+        2 + state.cursor
+      end
     else
       completed_idx = state.cursor - active_count
-      base = active_header_rows + max(active_count, 1)
+
+      active_height =
+        if show_sections do
+          section_total_height(disp_active)
+        else
+          2 + max(active_count, 1)
+        end
+
       separator = if completed_count > 0, do: 4, else: 0
-      base + separator + completed_idx
+      active_height + separator + completed_idx
     end
+  end
+
+  # Visual row for a cursor position within sectioned active todos
+  defp section_visual_row(disp_active, cursor) do
+    groups = Enum.chunk_by(disp_active, & &1.source)
+
+    {row, _} =
+      Enum.reduce_while(groups, {0, 0}, fn group, {visual_row, todo_idx} ->
+        # first group: header(1)+spacing(1)=2; others: blank(2)+header(1)+spacing(1)=4
+        overhead = if todo_idx == 0, do: 2, else: 4
+        group_size = length(group)
+
+        if cursor < todo_idx + group_size do
+          {:halt, {visual_row + overhead + (cursor - todo_idx), todo_idx}}
+        else
+          {:cont, {visual_row + overhead + group_size, todo_idx + group_size}}
+        end
+      end)
+
+    row
+  end
+
+  # Total visual height of all sectioned active rows
+  defp section_total_height(disp_active) do
+    groups = Enum.chunk_by(disp_active, & &1.source)
+
+    {total, _} =
+      Enum.reduce(groups, {0, 0}, fn group, {total, idx} ->
+        overhead = if idx == 0, do: 2, else: 4
+        {total + overhead + length(group), idx + 1}
+      end)
+
+    total
   end
 
   def combined_list(state) do

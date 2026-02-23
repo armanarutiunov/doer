@@ -1,6 +1,6 @@
 defmodule Doer.Project do
-  @derive {Jason.Encoder, only: [:id, :name, :index, :parent_id, :children_ids]}
-  defstruct [:id, :name, :index, :parent_id, children_ids: []]
+  @derive {Jason.Encoder, only: [:id, :name, :index, :parent_id]}
+  defstruct [:id, :name, :index, :parent_id]
 
   def new(name, index, opts \\ []) do
     %__MODULE__{
@@ -16,8 +16,7 @@ defmodule Doer.Project do
       id: map["id"],
       name: map["name"],
       index: map["index"],
-      parent_id: map["parent_id"],
-      children_ids: map["children_ids"] || []
+      parent_id: map["parent_id"]
     }
   end
 end
