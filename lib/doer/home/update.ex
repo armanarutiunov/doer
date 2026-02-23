@@ -10,6 +10,19 @@ defmodule Doer.Home.Update do
     {state, [:quit]}
   end
 
+  def update(:toggle_sidebar, state) do
+    if state.sidebar_open do
+      {%{state | sidebar_open: false, focus: :main}}
+    else
+      {%{state | sidebar_open: true, focus: :sidebar}}
+    end
+  end
+
+  def update(:switch_focus, state) do
+    new_focus = if state.focus == :main, do: :sidebar, else: :main
+    {%{state | focus: new_focus}}
+  end
+
   def update(:cursor_down, state) do
     max = max(length(Helpers.combined_list(state)) - 1, 0)
     {%{state | cursor: min(state.cursor + 1, max)} |> Helpers.adjust_scroll()}

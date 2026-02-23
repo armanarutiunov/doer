@@ -1,9 +1,34 @@
 defmodule Doer.Home.EventMapping do
   alias TermUI.Event
 
-  # Resize
+  # Resize — global
   def event_to_msg(%Event.Resize{width: w, height: h}, _state),
     do: {:msg, {:resize, w, h}}
+
+  # Help — global
+  def event_to_msg(%Event.Key{key: "?", modifiers: []}, %{mode: :normal}),
+    do: {:msg, :toggle_help}
+
+  def event_to_msg(%Event.Key{key: :escape}, %{show_help: true}),
+    do: {:msg, :toggle_help}
+
+  # Quit — global, normal mode
+  def event_to_msg(%Event.Key{key: "q", modifiers: []}, %{mode: :normal, show_help: false}),
+    do: {:msg, :quit}
+
+  # Toggle sidebar — global, normal mode
+  def event_to_msg(%Event.Key{key: "\\", modifiers: []}, %{mode: :normal, show_help: false}),
+    do: {:msg, :toggle_sidebar}
+
+  # Switch focus — Tab, normal mode
+  def event_to_msg(%Event.Key{key: :tab, modifiers: []}, %{mode: :normal, show_help: false, sidebar_open: true}),
+    do: {:msg, :switch_focus}
+
+  # Sidebar-focused dispatch
+  def event_to_msg(event, %{focus: :sidebar, show_help: false} = state),
+    do: Doer.Home.SidebarEventMapping.event_to_msg(event, state)
+
+  # --- Main focus ---
 
   # Normal mode — ctrl combos first
   def event_to_msg(%Event.Key{key: "d", modifiers: [:ctrl]}, %{mode: :normal, show_help: false}),
@@ -11,9 +36,6 @@ defmodule Doer.Home.EventMapping do
 
   def event_to_msg(%Event.Key{key: "u", modifiers: [:ctrl]}, %{mode: :normal, show_help: false}),
     do: {:msg, :half_page_up}
-
-  def event_to_msg(%Event.Key{key: "q", modifiers: []}, %{mode: :normal, show_help: false}),
-    do: {:msg, :quit}
 
   def event_to_msg(%Event.Key{key: key, modifiers: []}, %{mode: :normal, show_help: false})
       when key in ["j", :down],
@@ -38,12 +60,6 @@ defmodule Doer.Home.EventMapping do
 
   def event_to_msg(%Event.Key{key: "v", modifiers: []}, %{mode: :normal, show_help: false}),
     do: {:msg, :enter_visual}
-
-  def event_to_msg(%Event.Key{key: "?", modifiers: []}, %{mode: :normal}),
-    do: {:msg, :toggle_help}
-
-  def event_to_msg(%Event.Key{key: :escape}, %{show_help: true}),
-    do: {:msg, :toggle_help}
 
   def event_to_msg(%Event.Key{key: "/", modifiers: []}, %{mode: :normal, show_help: false}),
     do: {:msg, :enter_search}
