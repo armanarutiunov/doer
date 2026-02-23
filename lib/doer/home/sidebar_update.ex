@@ -1,6 +1,13 @@
 defmodule Doer.Home.SidebarUpdate do
   alias Doer.{Project, Store}
-  alias Doer.Home.View
+  alias Doer.Home.Helpers
+
+  # Guards for cursor=0 (All Todos) — project-only operations
+  def update(:sidebar_rename_project, %{sidebar_cursor: 0}), do: :noreply
+  def update(:sidebar_delete_project, %{sidebar_cursor: 0}), do: :noreply
+  def update(:sidebar_add_subproject, %{sidebar_cursor: 0}), do: :noreply
+  def update(:sidebar_reorder_down, %{sidebar_cursor: 0}), do: :noreply
+  def update(:sidebar_reorder_up, %{sidebar_cursor: 0}), do: :noreply
 
   def update(:sidebar_down, state) do
     max = sidebar_item_count(state) - 1
@@ -12,7 +19,7 @@ defmodule Doer.Home.SidebarUpdate do
   end
 
   def update(:sidebar_select, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     new_view =
       if state.sidebar_cursor == 0 do
@@ -33,7 +40,7 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Add subproject — only on top-level projects
   def update(:sidebar_add_subproject, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{parent_id: nil} = parent ->
@@ -46,7 +53,7 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Rename project
   def update(:sidebar_rename_project, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{} = project ->
@@ -59,7 +66,7 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Delete project
   def update(:sidebar_delete_project, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{} = project ->
@@ -103,7 +110,7 @@ defmodule Doer.Home.SidebarUpdate do
         project = Project.new(name, index)
         Store.save_project(project, [])
 
-        new_cursor = length(View.flat_ordered_projects(state.projects)) + 1
+        new_cursor = length(Helpers.flat_ordered_projects(state.projects)) + 1
 
         {%{state |
           sidebar_mode: :normal,
@@ -117,19 +124,14 @@ defmodule Doer.Home.SidebarUpdate do
       # New child project
       match?({:new_child, _}, state.sidebar_editing_id) ->
         {:new_child, parent_id} = state.sidebar_editing_id
-        parent = Enum.find(state.projects, &(&1.id == parent_id))
-        child = Project.new(name, 0, parent_id: parent_id)
-        updated_parent = %{parent | children_ids: parent.children_ids ++ [child.id]}
+        child_count = Enum.count(state.projects, &(&1.parent_id == parent_id))
+        child = Project.new(name, child_count, parent_id: parent_id)
 
-        projects =
-          state.projects
-          |> Enum.map(fn p -> if p.id == parent_id, do: updated_parent, else: p end)
-          |> Kernel.++([child])
+        projects = state.projects ++ [child]
 
         Store.save_project(child, [])
-        Store.save_project(updated_parent, Map.get(state.project_todos, parent_id, []))
 
-        flat = View.flat_ordered_projects(projects)
+        flat = Helpers.flat_ordered_projects(projects)
         new_cursor = (Enum.find_index(flat, &(&1.id == child.id)) || 0) + 1
 
         {%{state |
@@ -177,7 +179,7 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Reorder down
   def update(:sidebar_reorder_down, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{parent_id: nil} = project ->
@@ -193,7 +195,7 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Reorder up
   def update(:sidebar_reorder_up, state) do
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{parent_id: nil} = project ->
@@ -210,8 +212,7 @@ defmodule Doer.Home.SidebarUpdate do
   # --- Helpers ---
 
   defp sidebar_item_count(state) do
-    # 0 = All Todos, 1..n = projects
-    1 + length(View.flat_ordered_projects(state.projects))
+    1 + length(Helpers.flat_ordered_projects(state.projects))
   end
 
   defp switch_view(state, new_view) do
@@ -230,7 +231,7 @@ defmodule Doer.Home.SidebarUpdate do
       view_states = Map.put(state.view_states, state.current_view, saved)
 
       # Load todos for new view
-      {todos, todo_sources} = load_view_todos(state, new_view)
+      todos = load_view_todos(state, new_view)
 
       # Restore saved state or defaults
       restored = Map.get(view_states, new_view, %{})
@@ -239,7 +240,6 @@ defmodule Doer.Home.SidebarUpdate do
         current_view: new_view,
         view_states: view_states,
         todos: todos,
-        todo_sources: todo_sources,
         cursor: Map.get(restored, :cursor, 0),
         scroll_offset: Map.get(restored, :scroll_offset, 0),
         visual_anchor: Map.get(restored, :visual_anchor, 0),
@@ -252,20 +252,44 @@ defmodule Doer.Home.SidebarUpdate do
 
   defp load_view_todos(state, :all) do
     ungrouped = Store.load_all_todos()
-    flat = View.flat_ordered_projects(state.projects)
+    flat = Helpers.flat_ordered_projects(state.projects)
 
-    {all_todos, sources} =
-      Enum.reduce(flat, {ungrouped, List.duplicate(nil, length(ungrouped))}, fn project, {todos, srcs} ->
-        ptodos = Map.get(state.project_todos, project.id, [])
-        {todos ++ ptodos, srcs ++ List.duplicate(project.id, length(ptodos))}
-      end)
+    Enum.reduce(flat, ungrouped, fn project, todos ->
+      ptodos =
+        Map.get(state.project_todos, project.id, [])
+        |> Enum.map(&%{&1 | source: project.id})
 
-    {all_todos, sources}
+      todos ++ ptodos
+    end)
   end
 
   defp load_view_todos(state, {:project, id}) do
-    todos = Map.get(state.project_todos, id, [])
-    {todos, []}
+    Map.get(state.project_todos, id, [])
+  end
+
+  # Public helper: find which project a cursor position belongs to in All Todos view
+  def section_for_cursor(state, cursor) do
+    if state.current_view != :all do
+      nil
+    else
+      active = Enum.filter(state.todos, &(!&1.done))
+
+      if cursor >= 0 and cursor < length(active) do
+        todo = Enum.at(active, cursor)
+        todo.source
+      else
+        nil
+      end
+    end
+  end
+
+  def section_label(_projects, %Project{parent_id: nil} = project) do
+    "# #{project.name}"
+  end
+
+  def section_label(projects, %Project{parent_id: pid} = project) do
+    parent = Enum.find(projects, &(&1.id == pid))
+    if parent, do: "# #{parent.name} / #{project.name}", else: "# #{project.name}"
   end
 
   defp has_uncompleted_todos?(state, project) do
@@ -287,36 +311,18 @@ defmodule Doer.Home.SidebarUpdate do
   defp do_delete_project(state, project) do
     ids_to_delete = [project.id | get_descendant_ids(state.projects, project.id)]
 
-    # Delete files
     Enum.each(ids_to_delete, &Store.delete_project/1)
 
-    # Remove from parent's children_ids if child
-    projects =
-      if project.parent_id do
-        Enum.map(state.projects, fn p ->
-          if p.id == project.parent_id do
-            %{p | children_ids: Enum.reject(p.children_ids, &(&1 == project.id))}
-          else
-            p
-          end
-        end)
-      else
-        state.projects
-      end
+    projects = Enum.reject(state.projects, &(&1.id in ids_to_delete))
 
-    # Remove deleted projects
-    projects = Enum.reject(projects, &(&1.id in ids_to_delete))
-
-    # Save parent if child was deleted
+    # Save parent if child was deleted (parent still exists)
     if project.parent_id do
       parent = Enum.find(projects, &(&1.id == project.parent_id))
       if parent, do: Store.save_project(parent, Map.get(state.project_todos, parent.id, []))
     end
 
-    # Clean project_todos
     project_todos = Map.drop(state.project_todos, ids_to_delete)
 
-    # Switch view if deleted project was current
     current_view =
       case state.current_view do
         {:project, id} -> if id in ids_to_delete, do: :all, else: state.current_view
@@ -330,11 +336,9 @@ defmodule Doer.Home.SidebarUpdate do
       sidebar_confirm_project_id: nil
     }
 
-    # Clamp cursor
     max_cursor = max(sidebar_item_count(state) - 1, 0)
     state = %{state | sidebar_cursor: min(state.sidebar_cursor, max_cursor)}
 
-    # Switch view if needed
     state = if current_view != state.current_view, do: switch_view(state, current_view), else: state
 
     {state}
@@ -368,8 +372,7 @@ defmodule Doer.Home.SidebarUpdate do
       Store.save_project(updated_project, Map.get(state.project_todos, project.id, []))
       Store.save_project(updated_swap, Map.get(state.project_todos, swap.id, []))
 
-      # Update sidebar cursor
-      flat = View.flat_ordered_projects(projects)
+      flat = Helpers.flat_ordered_projects(projects)
       new_cursor = (Enum.find_index(flat, &(&1.id == project.id)) || 0) + 1
 
       {%{state | projects: projects, sidebar_cursor: new_cursor}}
@@ -377,22 +380,34 @@ defmodule Doer.Home.SidebarUpdate do
   end
 
   defp reorder_child(state, child, direction) do
-    parent = Enum.find(state.projects, &(&1.id == child.parent_id))
-    children_ids = parent.children_ids
-    idx = Enum.find_index(children_ids, &(&1 == child.id))
+    siblings =
+      state.projects
+      |> Enum.filter(&(&1.parent_id == child.parent_id))
+      |> Enum.sort_by(& &1.index)
+
+    idx = Enum.find_index(siblings, &(&1.id == child.id))
     swap_idx = if direction == :down, do: idx + 1, else: idx - 1
 
-    if swap_idx < 0 or swap_idx >= length(children_ids) do
+    if swap_idx < 0 or swap_idx >= length(siblings) do
       :noreply
     else
-      new_children_ids = List.replace_at(children_ids, idx, Enum.at(children_ids, swap_idx))
-      new_children_ids = List.replace_at(new_children_ids, swap_idx, child.id)
-      updated_parent = %{parent | children_ids: new_children_ids}
+      swap = Enum.at(siblings, swap_idx)
+      updated_child = %{child | index: swap.index}
+      updated_swap = %{swap | index: child.index}
 
-      projects = Enum.map(state.projects, fn p -> if p.id == parent.id, do: updated_parent, else: p end)
-      Store.save_project(updated_parent, Map.get(state.project_todos, parent.id, []))
+      projects =
+        Enum.map(state.projects, fn p ->
+          cond do
+            p.id == child.id -> updated_child
+            p.id == swap.id -> updated_swap
+            true -> p
+          end
+        end)
 
-      flat = View.flat_ordered_projects(projects)
+      Store.save_project(updated_child, Map.get(state.project_todos, child.id, []))
+      Store.save_project(updated_swap, Map.get(state.project_todos, swap.id, []))
+
+      flat = Helpers.flat_ordered_projects(projects)
       new_cursor = (Enum.find_index(flat, &(&1.id == child.id)) || 0) + 1
 
       {%{state | projects: projects, sidebar_cursor: new_cursor}}

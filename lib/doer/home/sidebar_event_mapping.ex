@@ -55,8 +55,5 @@ defmodule Doer.Home.SidebarEventMapping do
       when key in ["n", :escape],
       do: {:msg, :sidebar_cancel_delete}
 
-  def event_to_msg(%Event.Key{key: :escape}, %{sidebar_mode: :confirm_delete}),
-    do: {:msg, :sidebar_cancel_delete}
-
   def event_to_msg(_, _), do: :ignore
 end

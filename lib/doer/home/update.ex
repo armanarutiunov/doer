@@ -2,11 +2,35 @@ defmodule Doer.Home.Update do
   alias Doer.{Todo, Store}
   alias Doer.Home.Helpers
 
+  defp save_todos(state) do
+    case state.current_view do
+      {:project, id} ->
+        project = Enum.find(state.projects, &(&1.id == id))
+        if project, do: Store.save_project(project, state.todos)
+        %{state | project_todos: Map.put(state.project_todos, id, state.todos)}
+
+      :all ->
+        ungrouped = Enum.filter(state.todos, &is_nil(&1.source))
+        Store.save_all_todos(ungrouped)
+
+        project_groups = state.todos |> Enum.filter(& &1.source) |> Enum.group_by(& &1.source)
+
+        project_todos =
+          Enum.reduce(project_groups, state.project_todos, fn {pid, todos}, acc ->
+            project = Enum.find(state.projects, &(&1.id == pid))
+            if project, do: Store.save_project(project, todos)
+            Map.put(acc, pid, todos)
+          end)
+
+        %{state | project_todos: project_todos}
+    end
+  end
+
   def update({:resize, w, h}, state),
     do: {%{state | terminal_width: w, terminal_height: h} |> Helpers.adjust_scroll()}
 
   def update(:quit, state) do
-    Store.save(state.todos)
+    state = save_todos(state)
     {state, [:quit]}
   end
 
@@ -57,6 +81,16 @@ defmodule Doer.Home.Update do
     new_todo = Todo.new("")
     active = Enum.filter(state.todos, &(!&1.done))
     insert_pos = min(state.cursor + 1, length(active))
+
+    # Set source for All Todos view context-aware add
+    source =
+      if state.current_view == :all do
+        Doer.Home.SidebarUpdate.section_for_cursor(state, min(state.cursor, length(active) - 1))
+      else
+        nil
+      end
+
+    new_todo = %{new_todo | source: source}
 
     {before, after_list} = Enum.split(active, insert_pos)
     completed = Enum.filter(state.todos, & &1.done)
@@ -145,7 +179,7 @@ defmodule Doer.Home.Update do
       }
       |> Helpers.adjust_scroll()
 
-    Store.save(state.todos)
+    state = save_todos(state)
     {state}
   end
 
@@ -199,8 +233,8 @@ defmodule Doer.Home.Update do
       todo ->
         todos = Enum.reject(state.todos, &(&1.id == todo.id))
         cursor = Helpers.clamp_cursor(state.cursor, todos)
-        Store.save(todos)
-        {%{state | todos: todos, cursor: cursor} |> Helpers.adjust_scroll()}
+        state = save_todos(%{state | todos: todos})
+        {%{state | cursor: cursor} |> Helpers.adjust_scroll()}
     end
   end
 
@@ -218,8 +252,8 @@ defmodule Doer.Home.Update do
             if t.id == todo.id, do: Todo.toggle(t), else: t
           end)
 
-        Store.save(todos)
-        {%{state | todos: todos}}
+        state = save_todos(%{state | todos: todos})
+        {state}
     end
   end
 
@@ -243,8 +277,8 @@ defmodule Doer.Home.Update do
     selected_ids = Helpers.selected_todo_ids(state)
     todos = Enum.reject(state.todos, &(&1.id in selected_ids))
     cursor = Helpers.clamp_cursor(state.cursor, todos)
-    Store.save(todos)
-    {%{state | mode: :normal, todos: todos, cursor: cursor} |> Helpers.adjust_scroll()}
+    state = save_todos(%{state | todos: todos})
+    {%{state | mode: :normal, cursor: cursor} |> Helpers.adjust_scroll()}
   end
 
   def update(:toggle_selected, state) do
@@ -255,8 +289,8 @@ defmodule Doer.Home.Update do
         if t.id in selected_ids, do: Todo.toggle(t), else: t
       end)
 
-    Store.save(todos)
-    {%{state | mode: :normal, todos: todos} |> Helpers.adjust_scroll()}
+    state = save_todos(%{state | todos: todos})
+    {%{state | mode: :normal} |> Helpers.adjust_scroll()}
   end
 
   def update(:move_selected_down, state) do

@@ -52,8 +52,7 @@ defmodule Doer.Home do
       sidebar_mode: :normal,
       sidebar_editing_text: "",
       sidebar_editing_id: nil,
-      sidebar_confirm_project_id: nil,
-      todo_sources: []
+      sidebar_confirm_project_id: nil
     }
   end
 

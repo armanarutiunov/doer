@@ -130,4 +130,20 @@ defmodule Doer.Home.Helpers do
     |> Enum.chunk_every(width)
     |> Enum.map(&Enum.join/1)
   end
+
+  def flat_ordered_projects(projects) do
+    parents =
+      projects
+      |> Enum.filter(&is_nil(&1.parent_id))
+      |> Enum.sort_by(& &1.index)
+
+    Enum.flat_map(parents, fn parent ->
+      children =
+        projects
+        |> Enum.filter(&(&1.parent_id == parent.id))
+        |> Enum.sort_by(& &1.index)
+
+      [parent | children]
+    end)
+  end
 end

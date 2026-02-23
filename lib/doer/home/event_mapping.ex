@@ -5,23 +5,23 @@ defmodule Doer.Home.EventMapping do
   def event_to_msg(%Event.Resize{width: w, height: h}, _state),
     do: {:msg, {:resize, w, h}}
 
-  # Help — global
-  def event_to_msg(%Event.Key{key: "?", modifiers: []}, %{mode: :normal}),
+  # Help — global (only when sidebar is in normal mode too)
+  def event_to_msg(%Event.Key{key: "?", modifiers: []}, %{mode: :normal, sidebar_mode: :normal}),
     do: {:msg, :toggle_help}
 
   def event_to_msg(%Event.Key{key: :escape}, %{show_help: true}),
     do: {:msg, :toggle_help}
 
-  # Quit — global, normal mode
-  def event_to_msg(%Event.Key{key: "q", modifiers: []}, %{mode: :normal, show_help: false}),
+  # Quit — global, both modes normal
+  def event_to_msg(%Event.Key{key: "q", modifiers: []}, %{mode: :normal, show_help: false, sidebar_mode: :normal}),
     do: {:msg, :quit}
 
-  # Toggle sidebar — global, normal mode
-  def event_to_msg(%Event.Key{key: "\\", modifiers: []}, %{mode: :normal, show_help: false}),
+  # Toggle sidebar — global, both modes normal
+  def event_to_msg(%Event.Key{key: "\\", modifiers: []}, %{mode: :normal, show_help: false, sidebar_mode: :normal}),
     do: {:msg, :toggle_sidebar}
 
-  # Switch focus — Tab, normal mode
-  def event_to_msg(%Event.Key{key: :tab, modifiers: []}, %{mode: :normal, show_help: false, sidebar_open: true}),
+  # Switch focus — Tab, both modes normal
+  def event_to_msg(%Event.Key{key: :tab, modifiers: []}, %{mode: :normal, show_help: false, sidebar_open: true, sidebar_mode: :normal}),
     do: {:msg, :switch_focus}
 
   # Sidebar-focused dispatch

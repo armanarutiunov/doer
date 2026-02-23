@@ -156,23 +156,7 @@ defmodule Doer.Home.View do
     end
   end
 
-  def flat_ordered_projects(projects) do
-    parents =
-      projects
-      |> Enum.filter(&is_nil(&1.parent_id))
-      |> Enum.sort_by(& &1.index)
-
-    Enum.flat_map(parents, fn parent ->
-      children =
-        projects
-        |> Enum.filter(&(&1.parent_id == parent.id))
-        |> Enum.sort_by(fn child ->
-          Enum.find_index(parent.children_ids, &(&1 == child.id)) || 999
-        end)
-
-      [parent | children]
-    end)
-  end
+  defdelegate flat_ordered_projects(projects), to: Helpers
 
   # --- Main content ---
 
@@ -215,27 +199,37 @@ defmodule Doer.Home.View do
   def render_list(state, content_w, pad_str) do
     {disp_active, disp_completed} = Helpers.display_todos(state)
 
-    title = view_title(state)
-    active_header = [render_section_header(title, "Created", content_w, pad_str)]
-    active_header_spacing = blank_rows(1)
+    has_project_todos = state.current_view == :all and Enum.any?(disp_active, & &1.source)
+    show_sections = has_project_todos and state.mode not in [:search, :search_nav]
 
     active_rows =
-      if length(disp_active) == 0 do
-        empty_style = Style.new(fg: :bright_black)
-
-        [
-          stack(:horizontal, [
-            text(pad_str, nil),
-            text(String.duplicate(" ", Home.prefix_w()), nil),
-            text("press 'a' to add a new todo", empty_style)
-          ])
-        ]
+      if show_sections do
+        render_sectioned_active(disp_active, state, content_w, pad_str)
       else
-        disp_active
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {todo, idx} ->
-          render_todo_row(todo, idx, state, false, content_w, pad_str)
-        end)
+        title = view_title(state)
+        header = [render_section_header(title, "Created", content_w, pad_str)]
+        spacing = blank_rows(1)
+
+        rows =
+          if length(disp_active) == 0 do
+            empty_style = Style.new(fg: :bright_black)
+
+            [
+              stack(:horizontal, [
+                text(pad_str, nil),
+                text(String.duplicate(" ", Home.prefix_w()), nil),
+                text("press 'a' to add a new todo", empty_style)
+              ])
+            ]
+          else
+            disp_active
+            |> Enum.with_index()
+            |> Enum.flat_map(fn {todo, idx} ->
+              render_todo_row(todo, idx, state, false, content_w, pad_str)
+            end)
+          end
+
+        header ++ spacing ++ rows
       end
 
     section_spacing = if length(disp_completed) > 0, do: blank_rows(2), else: []
@@ -256,10 +250,55 @@ defmodule Doer.Home.View do
         render_todo_row(todo, idx, state, true, content_w, pad_str)
       end)
 
-    active_header ++
-      active_header_spacing ++
-      active_rows ++
+    active_rows ++
       section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
+  end
+
+  defp render_sectioned_active(disp_active, state, content_w, pad_str) do
+    active_with_idx = Enum.with_index(disp_active)
+
+    # Group by source, maintaining order
+    groups =
+      active_with_idx
+      |> Enum.chunk_while(
+        nil,
+        fn {todo, idx}, acc ->
+          source = todo.source
+          case acc do
+            nil -> {:cont, {source, [{todo, idx}]}}
+            {^source, items} -> {:cont, {source, items ++ [{todo, idx}]}}
+            {prev_source, items} -> {:cont, {prev_source, items}, {source, [{todo, idx}]}}
+          end
+        end,
+        fn
+          nil -> {:cont, nil}
+          acc -> {:cont, acc, nil}
+        end
+      )
+      |> Enum.reject(&is_nil/1)
+
+    groups
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {{source, items}, group_idx} ->
+      label =
+        if source do
+          project = Enum.find(state.projects, &(&1.id == source))
+          if project, do: Doer.Home.SidebarUpdate.section_label(state.projects, project), else: "Todos"
+        else
+          "Todos"
+        end
+
+      spacing = if group_idx > 0, do: blank_rows(1), else: []
+      header = [render_section_header(label, "Created", content_w, pad_str, group_idx)]
+      header_spacing = blank_rows(1)
+
+      rows =
+        Enum.flat_map(items, fn {todo, idx} ->
+          render_todo_row(todo, idx, state, false, content_w, pad_str)
+        end)
+
+      spacing ++ header ++ header_spacing ++ rows
+    end)
   end
 
   defp view_title(state) do
@@ -425,14 +464,21 @@ defmodule Doer.Home.View do
       "v          visual mode",
       "J/K        reorder (visual)",
       "/          search",
-      "G          go to end",
-      "g          go to start",
-      "ctrl+d     half page down",
-      "ctrl+u     half page up",
+      "G/g        end / start",
+      "ctrl+d/u   half page down/up",
       "\\          toggle sidebar",
       "Tab        switch focus",
       "?          toggle help",
       "q          quit",
+      "",
+      "Sidebar",
+      "",
+      "a          add project",
+      "s          add subproject",
+      "e/i        rename project",
+      "d          delete project",
+      "J/K        reorder projects",
+      "Enter/l    select project",
       ""
     ]
 
