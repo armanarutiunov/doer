@@ -324,6 +324,22 @@ defmodule Doer.Home.Update do
     end
   end
 
+  # Sidebar messages — delegate to SidebarUpdate
+  def update(msg, state) when msg in [
+    :sidebar_down, :sidebar_up, :sidebar_select,
+    :sidebar_add_project, :sidebar_add_subproject,
+    :sidebar_rename_project, :sidebar_delete_project,
+    :sidebar_confirm_delete, :sidebar_cancel_delete,
+    :sidebar_confirm_edit, :sidebar_cancel_edit,
+    :sidebar_backspace,
+    :sidebar_reorder_down, :sidebar_reorder_up
+  ] do
+    Doer.Home.SidebarUpdate.update(msg, state)
+  end
+
+  def update({:sidebar_type_char, _} = msg, state),
+    do: Doer.Home.SidebarUpdate.update(msg, state)
+
   # Search
   def update(:enter_search, state),
     do: {%{state | mode: :search, search_text: state.search_text}}
