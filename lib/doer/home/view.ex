@@ -6,35 +6,13 @@ defmodule Doer.Home.View do
   alias Doer.Home.Helpers
 
   def view(state) do
-    content_w = content_width(state.terminal_width)
-    left_pad = div(state.terminal_width - content_w, 2)
-    pad_str = String.duplicate(" ", left_pad)
-
-    # Top padding
-    top_pad = blank_rows(Home.pad_y_top())
-
-    # Todo list rows — slice visible range directly (no viewport)
-    list_rows = render_list(state, content_w, pad_str)
-    vh = max(state.terminal_height - Home.pad_y_top() - Home.bottom_reserved(), 1)
-
-    # Clamp scroll so we don't over-scroll past content
-    max_offset = max(length(list_rows) - vh, 0)
-    scroll = min(state.scroll_offset, max_offset)
-
-    visible_rows =
-      list_rows
-      |> Enum.drop(scroll)
-      |> Enum.take(vh)
-
-    # Pad to push bottom section to the bottom when content is short
-    pad_count = vh - length(visible_rows)
-    visible_pad = if pad_count > 0, do: blank_rows(pad_count), else: []
-
-    # Bottom section: spacer + search/empty + blank + mode bar
-    bottom_rows = render_bottom(state, content_w, pad_str)
-
-    all = top_pad ++ visible_rows ++ visible_pad ++ bottom_rows
-    base = stack(:vertical, all)
+    base =
+      if state.sidebar_open do
+        available_w = state.terminal_width - Home.sidebar_width()
+        stack(:horizontal, [render_sidebar(state), render_main(state, available_w)])
+      else
+        render_main(state, state.terminal_width)
+      end
 
     if state.show_help do
       help = render_help(state.terminal_width, state.terminal_height)
@@ -44,13 +22,191 @@ defmodule Doer.Home.View do
     end
   end
 
-  # Offset RGB blue channel by 1 per row to prevent terminal renderer
-  # from merging adjacent cells with identical styles during scroll
+  # --- Sidebar ---
+
+  def render_sidebar(state) do
+    sw = Home.sidebar_width()
+    th = state.terminal_height
+    items = sidebar_items(state)
+
+    dim = Style.new(fg: :bright_black)
+    cursor_bg = Style.new(bg: {55, 51, 84})
+
+    rows =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn {item, visual_idx} ->
+        render_sidebar_item(item, visual_idx, state, sw, dim, cursor_bg)
+      end)
+
+    # Pad to full height
+    pad_count = max(th - length(rows), 0)
+    pad_rows = Enum.map(1..max(pad_count, 1), fn _ -> text(String.duplicate(" ", sw), nil) end)
+
+    border_col = Style.new(fg: {50, 50, 55})
+
+    sidebar_content = stack(:vertical, rows ++ pad_rows)
+
+    # Right border via a thin column
+    border =
+      stack(
+        :vertical,
+        Enum.map(1..th, fn i -> text("│", %{border_col | fg: unique_rgb({50, 50, 55}, i)}) end)
+      )
+
+    stack(:horizontal, [sidebar_content, border])
+  end
+
+  defp sidebar_items(state) do
+    flat_projects = flat_ordered_projects(state.projects)
+
+    all_item = {:all, "All Todos", 0}
+    blank = {:blank, "", 0}
+    header = {:header, "Projects", 0}
+
+    project_items =
+      Enum.map(flat_projects, fn p ->
+        depth = if p.parent_id, do: 1, else: 0
+        {:project, p, depth}
+      end)
+
+    hint =
+      if project_items == [] and state.focus == :sidebar do
+        [{:hint, "press 'a' to create", 0}]
+      else
+        []
+      end
+
+    [all_item, blank, header] ++ project_items ++ hint
+  end
+
+  defp render_sidebar_item({:blank, _, _}, _vi, _state, sw, _dim, _cursor_bg) do
+    text(String.duplicate(" ", sw), nil)
+  end
+
+  defp render_sidebar_item({:header, label, _}, vi, _state, sw, dim, _cursor_bg) do
+    padded = String.pad_trailing("  " <> label, sw)
+    text(padded, %{dim | fg: unique_rgb({100, 100, 100}, vi)})
+  end
+
+  defp render_sidebar_item({:hint, label, _}, vi, _state, sw, _dim, _cursor_bg) do
+    padded = String.pad_trailing("    " <> label, sw)
+    text(padded, Style.new(fg: unique_rgb({80, 80, 80}, vi)))
+  end
+
+  defp render_sidebar_item({:all, label, _}, vi, state, sw, _dim, cursor_bg) do
+    cursor_idx = sidebar_cursor_to_visual(state, state.sidebar_cursor)
+    is_cursor = vi == cursor_idx and state.focus == :sidebar
+    is_selected = state.current_view == :all
+
+    style = if is_selected, do: Style.new(fg: :white, attrs: [:bold]), else: nil
+
+    padded = String.pad_trailing("  " <> label, sw)
+    row = text(padded, style)
+    if is_cursor, do: styled(row, cursor_bg), else: row
+  end
+
+  defp render_sidebar_item({:project, project, depth}, vi, state, sw, _dim, cursor_bg) do
+    cursor_idx = sidebar_cursor_to_visual(state, state.sidebar_cursor)
+    is_cursor = vi == cursor_idx and state.focus == :sidebar
+    is_selected = state.current_view == {:project, project.id}
+
+    indent = String.duplicate("  ", depth + 1)
+    prefix = "# "
+
+    {display, style} =
+      cond do
+        state.sidebar_mode == :insert and state.sidebar_editing_id == project.id ->
+          {state.sidebar_editing_text <> "█", Style.new(fg: :green)}
+
+        state.sidebar_mode == :confirm_delete and state.sidebar_confirm_project_id == project.id ->
+          {"Delete? y/n", Style.new(fg: :red)}
+
+        is_selected ->
+          {project.name, Style.new(fg: :white, attrs: [:bold])}
+
+        true ->
+          {project.name, nil}
+      end
+
+    label = indent <> prefix <> display
+    padded = String.pad_trailing(label, sw)
+    # Truncate if too long
+    padded = String.slice(padded, 0, sw)
+    row = text(padded, style)
+    if is_cursor, do: styled(row, cursor_bg), else: row
+  end
+
+  defp sidebar_cursor_to_visual(state, cursor) do
+    # Items: 0=All, 1=blank, 2=header, 3+=projects
+    # Cursor 0 = All Todos (visual 0)
+    # Cursor 1+ = project at index cursor-1 (visual 3+)
+    flat = flat_ordered_projects(state.projects)
+
+    if cursor == 0 do
+      0
+    else
+      project_idx = cursor - 1
+
+      if project_idx < length(flat) do
+        3 + project_idx
+      else
+        0
+      end
+    end
+  end
+
+  def flat_ordered_projects(projects) do
+    parents =
+      projects
+      |> Enum.filter(&is_nil(&1.parent_id))
+      |> Enum.sort_by(& &1.index)
+
+    Enum.flat_map(parents, fn parent ->
+      children =
+        projects
+        |> Enum.filter(&(&1.parent_id == parent.id))
+        |> Enum.sort_by(fn child ->
+          Enum.find_index(parent.children_ids, &(&1 == child.id)) || 999
+        end)
+
+      [parent | children]
+    end)
+  end
+
+  # --- Main content ---
+
+  def render_main(state, available_width) do
+    content_w = content_width(available_width)
+    left_pad = div(available_width - content_w, 2)
+    pad_str = String.duplicate(" ", max(left_pad, 0))
+
+    top_pad = blank_rows(Home.pad_y_top())
+    list_rows = render_list(state, content_w, pad_str)
+    vh = max(state.terminal_height - Home.pad_y_top() - Home.bottom_reserved(), 1)
+
+    max_offset = max(length(list_rows) - vh, 0)
+    scroll = min(state.scroll_offset, max_offset)
+
+    visible_rows =
+      list_rows
+      |> Enum.drop(scroll)
+      |> Enum.take(vh)
+
+    pad_count = vh - length(visible_rows)
+    visible_pad = if pad_count > 0, do: blank_rows(pad_count), else: []
+
+    bottom_rows = render_bottom(state, content_w, pad_str)
+
+    all = top_pad ++ visible_rows ++ visible_pad ++ bottom_rows
+    stack(:vertical, all)
+  end
+
   defp unique_rgb({r, g, b}, idx) when b >= 255, do: {r, g, b - rem(idx, 2)}
   defp unique_rgb({r, g, b}, idx), do: {r, g, b + rem(idx, 2)}
 
-  def content_width(tw) do
-    max(trunc(tw * 0.6), 20)
+  def content_width(available_width) do
+    max(trunc(available_width * 0.6), 20)
   end
 
   def blank_rows(0), do: []
@@ -59,7 +215,8 @@ defmodule Doer.Home.View do
   def render_list(state, content_w, pad_str) do
     {disp_active, disp_completed} = Helpers.display_todos(state)
 
-    active_header = [render_section_header("Todos", "Created", content_w, pad_str)]
+    title = view_title(state)
+    active_header = [render_section_header(title, "Created", content_w, pad_str)]
     active_header_spacing = blank_rows(1)
 
     active_rows =
@@ -105,6 +262,19 @@ defmodule Doer.Home.View do
       section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
   end
 
+  defp view_title(state) do
+    case state.current_view do
+      :all ->
+        "Todos"
+
+      {:project, id} ->
+        case Enum.find(state.projects, &(&1.id == id)) do
+          nil -> "Todos"
+          project -> "# #{project.name} todos"
+        end
+    end
+  end
+
   def render_section_header(title, date_label, content_w, pad_str, idx \\ 0) do
     dim = Style.new(fg: unique_rgb({100, 100, 100}, idx))
     prefix = String.duplicate(" ", Home.prefix_w())
@@ -129,13 +299,11 @@ defmodule Doer.Home.View do
         ((state.editing_id == nil and idx == state.cursor) or
            state.editing_id == todo.id)
 
-    # Determine age strings
     age_str = Todo.age_label(todo)
 
     completed_age_str =
       if is_completed and todo.completed_at, do: Todo.completed_label(todo), else: nil
 
-    # Right column: aligned with "Created" (7) or "Created  Completed" (7+2+9)
     right_col = "  " <> String.pad_leading(age_str, 7)
 
     right_col =
@@ -144,23 +312,15 @@ defmodule Doer.Home.View do
         else: right_col
 
     right_w = String.length(right_col)
-
-    # Available width for text (after indicator + checkbox, before age)
     text_area_w = max(content_w - Home.prefix_w() - right_w, 10)
-
-    # Build display text
     display_text = if is_editing, do: state.editing_text <> "█", else: todo.text
-
-    # Wrap text into lines
     lines = Helpers.wrap_text(display_text, text_area_w)
 
-    # Indicator + checkbox prefix
     indicator = if is_selected, do: "▎ ", else: "  "
     checkbox = if is_completed, do: "◉ ", else: "◯ "
     prefix = indicator <> checkbox
     continuation_prefix = String.duplicate(" ", Home.prefix_w())
 
-    # Style
     text_style =
       cond do
         is_editing -> Style.new(fg: :green)
@@ -170,10 +330,8 @@ defmodule Doer.Home.View do
       end
 
     right_style = Style.new(fg: unique_rgb({140, 140, 140}, idx))
-
     cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {55, 51, 84}), else: nil
 
-    # Build rows — first line has prefix + text + right-aligned age
     lines
     |> Enum.with_index()
     |> Enum.map(fn {line, line_idx} ->
@@ -206,7 +364,6 @@ defmodule Doer.Home.View do
   end
 
   def render_bottom(state, content_w, pad_str) do
-    # Always 3 lines: spacer + search_or_empty + mode_bar
     spacer = [text("", nil)]
 
     search_line =
@@ -229,17 +386,14 @@ defmodule Doer.Home.View do
     mode_text = " #{label} "
     mode_w = String.length(mode_text)
 
-    # Completed count
     total = length(state.todos)
     done = Enum.count(state.todos, & &1.done)
     count_text = "#{done}/#{total} completed"
     count_w = String.length(count_text)
 
-    # Help hint
     hint_text = if state.mode == :normal and not state.show_help, do: "? for help", else: ""
     hint_w = String.length(hint_text)
 
-    # Padding between mode, count, and hint to fill content_w
     remaining = max(content_w - mode_w - count_w - hint_w, 0)
     left_gap = div(remaining, 2)
     right_gap = remaining - left_gap
@@ -275,6 +429,8 @@ defmodule Doer.Home.View do
       "g          go to start",
       "ctrl+d     half page down",
       "ctrl+u     half page up",
+      "\\          toggle sidebar",
+      "Tab        switch focus",
       "?          toggle help",
       "q          quit",
       ""
