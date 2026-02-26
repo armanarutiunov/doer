@@ -9,20 +9,30 @@ defmodule Doer.Home.View do
     base =
       if state.sidebar_open do
         available_w = max(state.terminal_width - Home.sidebar_width() - 1, 10)
-        stack(:horizontal, [render_sidebar(state), render_main(state, available_w)])
+        sidebar = render_sidebar(state)
+        main = render_main(state, available_w)
+        stack(:horizontal, [sidebar, main])
       else
         render_main(state, state.terminal_width)
       end
 
-    if state.show_help do
-      help = render_help(state.terminal_width, state.terminal_height)
-      stack(:vertical, [base, help])
-    else
-      base
+    help_overlays =
+      if state.show_help do
+        [render_help(state.terminal_width, state.terminal_height)]
+      else
+        []
+      end
+
+    case help_overlays do
+      [] -> base
+      ovs -> stack(:vertical, [base | ovs])
     end
   end
 
   # --- Sidebar ---
+
+  # Near-invisible fg for space cells — needed so diff detects them vs Cell.empty()
+  defp spacer_style(idx), do: Style.new(fg: unique_rgb({1, 1, 1}, idx))
 
   def render_sidebar(state) do
     sw = Home.sidebar_width()
@@ -31,20 +41,19 @@ defmodule Doer.Home.View do
     cursor_vi = sidebar_cursor_to_visual(state, state.sidebar_cursor)
 
     dim = Style.new(fg: :bright_black)
-    cursor_bg = Style.new(bg: {55, 51, 84})
+    active_cursor_bg = Style.new(bg: {55, 51, 84})
+    inactive_cursor_bg = Style.new(bg: {40, 40, 44})
 
     rows =
       items
       |> Enum.with_index()
       |> Enum.map(fn {item, visual_idx} ->
-        render_sidebar_item(item, visual_idx, cursor_vi, state, sw, dim, cursor_bg)
+        render_sidebar_item(item, visual_idx, cursor_vi, state, sw, dim, active_cursor_bg, inactive_cursor_bg)
       end)
 
     # Pad to full height
     pad_count = max(th - length(rows), 0)
-    pad_rows = if pad_count > 0, do: Enum.map(1..pad_count, fn _ -> text(String.duplicate(" ", sw), nil) end), else: []
-
-    border_col = Style.new(fg: {50, 50, 55})
+    pad_rows = if pad_count > 0, do: Enum.map(1..pad_count, fn i -> text(String.duplicate(" ", sw), spacer_style(i)) end), else: []
 
     sidebar_content = stack(:vertical, rows ++ pad_rows)
 
@@ -52,7 +61,7 @@ defmodule Doer.Home.View do
     border =
       stack(
         :vertical,
-        Enum.map(1..th, fn i -> text("│", %{border_col | fg: unique_rgb({50, 50, 55}, i)}) end)
+        Enum.map(1..th, fn i -> text("│", Style.new(fg: unique_rgb({50, 50, 55}, i))) end)
       )
 
     stack(:horizontal, [sidebar_content, border])
@@ -81,33 +90,38 @@ defmodule Doer.Home.View do
     [all_item, blank, header] ++ project_items ++ hint
   end
 
-  defp render_sidebar_item({:blank, _, _}, _vi, _cvi, _state, sw, _dim, _cursor_bg) do
-    text(String.duplicate(" ", sw), nil)
+  defp render_sidebar_item({:blank, _, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
+    text(String.duplicate(" ", sw), spacer_style(vi))
   end
 
-  defp render_sidebar_item({:header, label, _}, vi, _cvi, _state, sw, dim, _cursor_bg) do
+  defp render_sidebar_item({:header, label, _}, vi, _cvi, _state, sw, dim, _active_bg, _inactive_bg) do
     padded = String.pad_trailing("  " <> label, sw)
     text(padded, %{dim | fg: unique_rgb({100, 100, 100}, vi)})
   end
 
-  defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _cursor_bg) do
+  defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
     padded = String.pad_trailing("    " <> label, sw)
     text(padded, Style.new(fg: unique_rgb({80, 80, 80}, vi)))
   end
 
-  defp render_sidebar_item({:all, label, _}, vi, cvi, state, sw, _dim, cursor_bg) do
-    is_cursor = vi == cvi and state.focus == :sidebar
+  defp render_sidebar_item({:all, label, _}, vi, cvi, state, sw, _dim, active_bg, inactive_bg) do
+    is_cursor = vi == cvi
     is_selected = state.current_view == :all
 
-    style = if is_selected, do: Style.new(fg: :white, attrs: [:bold]), else: nil
+    style = if is_selected, do: Style.new(fg: :white, attrs: [:bold]), else: Style.new(fg: unique_rgb({200, 200, 200}, vi))
 
     padded = String.pad_trailing("  " <> label, sw)
     row = text(padded, style)
-    if is_cursor, do: styled(row, cursor_bg), else: row
+
+    cond do
+      is_cursor and state.focus == :sidebar -> styled(row, active_bg)
+      is_cursor -> styled(row, inactive_bg)
+      true -> row
+    end
   end
 
-  defp render_sidebar_item({:project, project, depth}, vi, cvi, state, sw, _dim, cursor_bg) do
-    is_cursor = vi == cvi and state.focus == :sidebar
+  defp render_sidebar_item({:project, project, depth}, vi, cvi, state, sw, _dim, active_bg, inactive_bg) do
+    is_cursor = vi == cvi
     is_selected = state.current_view == {:project, project.id}
 
     indent = String.duplicate("  ", depth + 1)
@@ -125,7 +139,7 @@ defmodule Doer.Home.View do
           {project.name, Style.new(fg: :white, attrs: [:bold])}
 
         true ->
-          {project.name, nil}
+          {project.name, Style.new(fg: unique_rgb({200, 200, 200}, vi))}
       end
 
     label = indent <> prefix <> display
@@ -133,7 +147,12 @@ defmodule Doer.Home.View do
     # Truncate if too long
     padded = String.slice(padded, 0, sw)
     row = text(padded, style)
-    if is_cursor, do: styled(row, cursor_bg), else: row
+
+    cond do
+      is_cursor and state.focus == :sidebar -> styled(row, active_bg)
+      is_cursor -> styled(row, inactive_bg)
+      true -> row
+    end
   end
 
   defp sidebar_cursor_to_visual(state, cursor) do
