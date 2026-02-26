@@ -49,9 +49,11 @@ defmodule Doer.Home.Update do
   def update(:toggle_sidebar, state) do
     if state.sidebar_open do
       {%{state | sidebar_open: false, focus: :main, sidebar_mode: :normal,
-         sidebar_editing_text: "", sidebar_editing_id: nil, sidebar_confirm_project_id: nil}}
+         sidebar_editing_text: "", sidebar_editing_id: nil, sidebar_confirm_project_id: nil}
+       |> Helpers.adjust_scroll()}
     else
-      {%{state | sidebar_open: true, focus: :sidebar}}
+      {%{state | sidebar_open: true, focus: :sidebar}
+       |> Helpers.adjust_scroll()}
     end
   end
 
