@@ -28,7 +28,9 @@ defmodule Doer.Home.SidebarUpdate do
 
   # Add project
   def update(:sidebar_add_project, state) do
-    {%{state | sidebar_mode: :insert, sidebar_editing_text: "", sidebar_editing_id: nil}}
+    flat = Helpers.flat_ordered_projects(state.projects)
+    new_cursor = length(flat) + 1
+    {%{state | sidebar_mode: :insert, sidebar_editing_text: "", sidebar_editing_id: nil, sidebar_cursor: new_cursor}}
   end
 
   # Add subproject — only on top-level projects
@@ -37,7 +39,16 @@ defmodule Doer.Home.SidebarUpdate do
 
     case Enum.at(flat, state.sidebar_cursor - 1) do
       %Project{parent_id: nil} = parent ->
-        {%{state | sidebar_mode: :insert, sidebar_editing_text: "", sidebar_editing_id: {:new_child, parent.id}}}
+        # Cursor after parent's last child
+        last_child_idx =
+          flat
+          |> Enum.with_index()
+          |> Enum.filter(fn {p, _} -> p.id == parent.id or p.parent_id == parent.id end)
+          |> List.last()
+          |> then(fn {_, i} -> i end)
+
+        new_cursor = last_child_idx + 1 + 1  # +1 for 0-index, +1 for "All Todos" offset
+        {%{state | sidebar_mode: :insert, sidebar_editing_text: "", sidebar_editing_id: {:new_child, parent.id}, sidebar_cursor: new_cursor}}
 
       _ ->
         :noreply

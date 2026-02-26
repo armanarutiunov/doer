@@ -81,6 +81,32 @@ defmodule Doer.Home.View do
         {:project, p, depth}
       end)
 
+    # Inject editing row for new project/subproject
+    project_items =
+      if state.sidebar_mode == :insert do
+        case state.sidebar_editing_id do
+          nil ->
+            # New top-level project — append at end
+            project_items ++ [{:new_project, 0}]
+
+          {:new_child, parent_id} ->
+            # New subproject — insert after parent's last child
+            insert_idx =
+              project_items
+              |> Enum.with_index()
+              |> Enum.filter(fn {{:project, p, _}, _} -> p.id == parent_id or p.parent_id == parent_id end)
+              |> List.last()
+              |> then(fn {_, i} -> i + 1 end)
+
+            List.insert_at(project_items, insert_idx, {:new_project, 1})
+
+          _ ->
+            project_items
+        end
+      else
+        project_items
+      end
+
     hint =
       if project_items == [] and state.focus == :sidebar do
         [{:hint, "press 'a' to create", 0}]
@@ -103,6 +129,16 @@ defmodule Doer.Home.View do
   defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
     padded = String.pad_trailing("    " <> label, sw)
     text(padded, Style.new(fg: unique_rgb({80, 80, 80}, vi)))
+  end
+
+  defp render_sidebar_item({:new_project, depth}, _vi, _cvi, state, sw, _dim, active_bg, _inactive_bg) do
+    indent = String.duplicate("  ", depth + 1)
+    prefix = "# "
+    display = state.sidebar_editing_text <> "█"
+    label = indent <> prefix <> display
+    padded = String.slice(String.pad_trailing(label, sw), 0, sw)
+    row = text(padded, Style.new(fg: :green))
+    if state.focus == :sidebar, do: styled(row, active_bg), else: row
   end
 
   defp render_sidebar_item({:all, label, _}, vi, cvi, state, sw, _dim, active_bg, inactive_bg) do
@@ -157,17 +193,18 @@ defmodule Doer.Home.View do
   end
 
   defp sidebar_cursor_to_visual(state, cursor) do
-    # Items: 0=All, 1=blank, 2=header, 3+=projects
+    # Items: 0=All, 1=blank, 2=header, 3+=projects (+ editing row when inserting)
     # Cursor 0 = All Todos (visual 0)
     # Cursor 1+ = project at index cursor-1 (visual 3+)
-    flat = flat_ordered_projects(state.projects)
+    items = sidebar_items(state)
+    project_items = Enum.drop(items, 3)  # skip All, blank, header
 
     if cursor == 0 do
       0
     else
       project_idx = cursor - 1
 
-      if project_idx < length(flat) do
+      if project_idx < length(project_items) do
         3 + project_idx
       else
         0
