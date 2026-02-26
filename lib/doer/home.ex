@@ -41,7 +41,7 @@ defmodule Doer.Home do
       scroll_offset: 0,
       terminal_width: cols,
       terminal_height: rows,
-      sidebar_open: false,
+      sidebar_open: true,
       focus: :main,
       sidebar_cursor: 0,
       sidebar_scroll: 0,
