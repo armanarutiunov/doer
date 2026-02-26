@@ -28,6 +28,11 @@ defmodule Doer.Home.EventMapping do
   def event_to_msg(event, %{focus: :sidebar, show_help: false} = state),
     do: Doer.Home.SidebarEventMapping.event_to_msg(event, state)
 
+  # Main → sidebar via h/left
+  def event_to_msg(%Event.Key{key: key, modifiers: []}, %{mode: :normal, show_help: false, sidebar_open: true, focus: :main})
+      when key in ["h", :left],
+      do: {:msg, :switch_focus}
+
   # --- Main focus ---
 
   # Normal mode — ctrl combos first

@@ -11,25 +11,18 @@ defmodule Doer.Home.SidebarUpdate do
 
   def update(:sidebar_down, state) do
     max = sidebar_item_count(state) - 1
-    {%{state | sidebar_cursor: min(state.sidebar_cursor + 1, max)}}
+    new_cursor = min(state.sidebar_cursor + 1, max)
+    state = %{state | sidebar_cursor: new_cursor}
+    {switch_view_for_cursor(state)}
   end
 
   def update(:sidebar_up, state) do
-    {%{state | sidebar_cursor: max(state.sidebar_cursor - 1, 0)}}
+    new_cursor = max(state.sidebar_cursor - 1, 0)
+    state = %{state | sidebar_cursor: new_cursor}
+    {switch_view_for_cursor(state)}
   end
 
   def update(:sidebar_select, state) do
-    flat = Helpers.flat_ordered_projects(state.projects)
-
-    new_view =
-      if state.sidebar_cursor == 0 do
-        :all
-      else
-        project = Enum.at(flat, state.sidebar_cursor - 1)
-        if project, do: {:project, project.id}, else: state.current_view
-      end
-
-    state = switch_view(state, new_view)
     {%{state | focus: :main}}
   end
 
@@ -210,6 +203,22 @@ defmodule Doer.Home.SidebarUpdate do
   end
 
   # --- Helpers ---
+
+  defp switch_view_for_cursor(state) do
+    flat = Helpers.flat_ordered_projects(state.projects)
+
+    new_view =
+      if state.sidebar_cursor == 0 do
+        :all
+      else
+        case Enum.at(flat, state.sidebar_cursor - 1) do
+          nil -> state.current_view
+          project -> {:project, project.id}
+        end
+      end
+
+    switch_view(state, new_view)
+  end
 
   defp sidebar_item_count(state) do
     1 + length(Helpers.flat_ordered_projects(state.projects))
