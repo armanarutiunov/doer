@@ -42,7 +42,7 @@ defmodule Doer.Home.View do
 
     dim = Style.new(fg: :bright_black)
     active_cursor_bg = Style.new(bg: {55, 51, 84})
-    inactive_cursor_bg = Style.new(bg: {40, 40, 44})
+    inactive_cursor_bg = Style.new(bg: {50, 48, 60})
 
     rows =
       items
@@ -57,11 +57,12 @@ defmodule Doer.Home.View do
 
     sidebar_content = stack(:vertical, rows ++ pad_rows)
 
-    # Right border via a thin column
+    # Right border — brighter when sidebar focused, dim when main focused
+    border_rgb = if state.focus == :sidebar, do: {100, 100, 110}, else: {50, 50, 55}
     border =
       stack(
         :vertical,
-        Enum.map(1..th, fn i -> text("│", Style.new(fg: unique_rgb({50, 50, 55}, i))) end)
+        Enum.map(1..th, fn i -> text("│", Style.new(fg: unique_rgb(border_rgb, i))) end)
       )
 
     stack(:horizontal, [sidebar_content, border])
@@ -370,7 +371,12 @@ defmodule Doer.Home.View do
       end
 
     right_style = Style.new(fg: unique_rgb({140, 140, 140}, idx))
-    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {55, 51, 84}), else: nil
+    main_focused = not state.sidebar_open or state.focus == :main
+    cursor_bg = cond do
+      not is_cursor or is_editing -> nil
+      main_focused -> Style.new(bg: {55, 51, 84})
+      true -> Style.new(bg: {50, 48, 60})
+    end
 
     lines
     |> Enum.with_index()

@@ -8,7 +8,7 @@ defmodule Doer.Home do
   @bottom_reserved 5
   @scroll_margin 5
   @prefix_w 4
-  @sidebar_width 24
+  @sidebar_width 35
 
   def pad_y_top, do: @pad_y_top
   def bottom_reserved, do: @bottom_reserved
