@@ -20,10 +20,21 @@ defmodule Doer.Home do
 
   def init(_opts) do
     Store.init()
-    todos = Store.load_all_todos()
+    ungrouped = Store.load_all_todos()
     project_data = Store.load_projects()
     projects = Enum.map(project_data, fn {p, _} -> p end)
     project_todos = Map.new(project_data, fn {p, t} -> {p.id, t} end)
+
+    flat = Helpers.flat_ordered_projects(projects)
+
+    todos =
+      Enum.reduce(flat, ungrouped, fn project, acc ->
+        ptodos =
+          Map.get(project_todos, project.id, [])
+          |> Enum.map(&%{&1 | source: project.id})
+
+        acc ++ ptodos
+      end)
     {rows, cols} = TermUI.Platform.terminal_size()
     schedule_size_poll()
 
