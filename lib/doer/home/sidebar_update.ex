@@ -343,12 +343,6 @@ defmodule Doer.Home.SidebarUpdate do
 
     project_todos = Map.drop(state.project_todos, ids_to_delete)
 
-    current_view =
-      case state.current_view do
-        {:project, id} -> if id in ids_to_delete, do: :all, else: state.current_view
-        other -> other
-      end
-
     state = %{state |
       projects: projects,
       project_todos: project_todos,
@@ -359,7 +353,7 @@ defmodule Doer.Home.SidebarUpdate do
     max_cursor = max(sidebar_item_count(state) - 1, 0)
     state = %{state | sidebar_cursor: min(state.sidebar_cursor, max_cursor)}
 
-    state = if current_view != state.current_view, do: switch_view(state, current_view), else: state
+    state = switch_view_for_cursor(state)
 
     {state}
   end
