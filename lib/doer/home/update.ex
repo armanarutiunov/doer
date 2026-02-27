@@ -318,6 +318,9 @@ defmodule Doer.Home.Update do
 
       {before_swap, [swap_item | after_swap]} = Enum.split(rest, sel_min)
 
+      # In :all view, only change source at section boundary
+      selected = maybe_update_source(selected, elem(swap_item, 0).source, state)
+
       new_active =
         Enum.map(before_swap, &elem(&1, 0)) ++
           [elem(swap_item, 0)] ++
@@ -326,13 +329,14 @@ defmodule Doer.Home.Update do
 
       completed = Enum.filter(state.todos, & &1.done)
 
-      {%{
-         state
-         | todos: new_active ++ completed,
-           cursor: state.cursor + 1,
-           visual_anchor: state.visual_anchor + 1
-       }
-       |> Helpers.adjust_scroll()}
+      state =
+        %{state | todos: new_active ++ completed,
+          cursor: state.cursor + 1,
+          visual_anchor: state.visual_anchor + 1}
+        |> Helpers.adjust_scroll()
+
+      state = save_todos(state)
+      {state}
     else
       :noreply
     end
@@ -340,34 +344,52 @@ defmodule Doer.Home.Update do
 
   def update(:move_selected_up, state) do
     active = Enum.filter(state.todos, &(!&1.done))
-    {sel_min, _sel_max} = Helpers.selection_range(state)
+    {sel_min, sel_max} = Helpers.selection_range(state)
 
     if sel_min > 0 do
       active_list = Enum.with_index(active)
 
       {selected, rest} =
-        Enum.split_with(active_list, fn {_, i} ->
-          i >= sel_min and i <= elem(Helpers.selection_range(state), 1)
-        end)
+        Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
 
-      {before, after_list} = Enum.split(rest, sel_min - 1)
+      {before, [swap | after_rest]} = Enum.split(rest, sel_min - 1)
+
+      # In :all view, only change source at section boundary
+      selected = maybe_update_source(selected, elem(swap, 0).source, state)
 
       new_active =
         Enum.map(before, &elem(&1, 0)) ++
           Enum.map(selected, &elem(&1, 0)) ++
-          Enum.map(after_list, &elem(&1, 0))
+          [elem(swap, 0)] ++
+          Enum.map(after_rest, &elem(&1, 0))
 
       completed = Enum.filter(state.todos, & &1.done)
 
-      {%{
-         state
-         | todos: new_active ++ completed,
-           cursor: state.cursor - 1,
-           visual_anchor: state.visual_anchor - 1
-       }
-       |> Helpers.adjust_scroll()}
+      state =
+        %{state | todos: new_active ++ completed,
+          cursor: state.cursor - 1,
+          visual_anchor: state.visual_anchor - 1}
+        |> Helpers.adjust_scroll()
+
+      state = save_todos(state)
+      {state}
     else
       :noreply
+    end
+  end
+
+  # Only change source when crossing a section boundary in :all view
+  defp maybe_update_source(selected, swap_source, state) do
+    if state.current_view == :all do
+      sel_source = elem(hd(selected), 0).source
+
+      if sel_source != swap_source do
+        Enum.map(selected, fn {todo, i} -> {%{todo | source: swap_source}, i} end)
+      else
+        selected
+      end
+    else
+      selected
     end
   end
 
