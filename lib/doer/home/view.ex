@@ -38,7 +38,7 @@ defmodule Doer.Home.View do
     sw = Home.sidebar_width()
     th = state.terminal_height
     items = sidebar_items(state)
-    cursor_vi = sidebar_cursor_to_visual(state, state.sidebar_cursor)
+    cursor_vi = cursor_to_visual(items, state.sidebar_cursor)
 
     dim = Style.new(fg: :bright_black)
     active_cursor_bg = Style.new(bg: {55, 51, 84})
@@ -74,6 +74,7 @@ defmodule Doer.Home.View do
     all_item = {:all, "All Todos", 0}
     blank = {:blank, "", 0}
     header = {:header, "Projects", 0}
+    header_spacing = {:blank, "", 0}
 
     project_items =
       Enum.map(flat_projects, fn p ->
@@ -114,16 +115,16 @@ defmodule Doer.Home.View do
         []
       end
 
-    [all_item, blank, header] ++ project_items ++ hint
+    [all_item, blank, header, header_spacing] ++ project_items ++ hint
   end
 
   defp render_sidebar_item({:blank, _, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
     text(String.duplicate(" ", sw), spacer_style(vi))
   end
 
-  defp render_sidebar_item({:header, label, _}, vi, _cvi, _state, sw, dim, _active_bg, _inactive_bg) do
+  defp render_sidebar_item({:header, label, _}, _vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
     padded = String.pad_trailing("  " <> label, sw)
-    text(padded, %{dim | fg: unique_rgb({100, 100, 100}, vi)})
+    text(padded, Style.new(fg: :bright_black))
   end
 
   defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
@@ -192,12 +193,9 @@ defmodule Doer.Home.View do
     end
   end
 
-  defp sidebar_cursor_to_visual(state, cursor) do
-    # Items: 0=All, 1=blank, 2=header, 3+=projects (+ editing row when inserting)
-    # Cursor 0 = All Todos (visual 0)
-    # Cursor 1+ = project at index cursor-1 (visual 3+)
-    items = sidebar_items(state)
-    project_items = Enum.drop(items, 3)  # skip All, blank, header
+  defp cursor_to_visual(items, cursor) do
+    # Items: 0=All, 1=blank, 2=header, 3=spacing, 4+=projects
+    project_items = Enum.drop(items, 4)
 
     if cursor == 0 do
       0
@@ -205,7 +203,7 @@ defmodule Doer.Home.View do
       project_idx = cursor - 1
 
       if project_idx < length(project_items) do
-        3 + project_idx
+        4 + project_idx
       else
         0
       end
@@ -498,26 +496,40 @@ defmodule Doer.Home.View do
   def render_help(tw, th) do
     lines = [
       "",
-      "Keybindings",
+      "Normal",
       "",
       "j/k/↑/↓   navigate",
       "a          add todo",
       "e/i        edit todo",
       "d          delete todo",
       "space      toggle done",
-      "v          visual mode",
       "J/K        reorder todo",
+      "v          visual mode",
       "/          search",
       "G/g        end / start",
       "ctrl+d/u   half page down/up",
       "h/←        focus sidebar",
       "\\          toggle sidebar",
       "Tab        switch focus",
-      "?          toggle help",
-      "q          quit",
+      "?          help   q  quit",
+      "",
+      "Visual",
+      "",
+      "j/k        extend selection",
+      "J/K        reorder selected",
+      "d          delete selected",
+      "space      toggle selected",
+      "Esc        exit visual",
+      "",
+      "Search",
+      "",
+      "type       filter todos",
+      "Enter      navigate results",
+      "Esc        cancel search",
       "",
       "Sidebar",
       "",
+      "j/k/↑/↓   navigate",
       "a          add project",
       "s          add subproject",
       "e/i        rename project",
@@ -533,11 +545,21 @@ defmodule Doer.Home.View do
     box_h = length(lines)
     side = String.duplicate(" ", pad_x)
 
+    section_headers = ~w(Normal Visual Search Sidebar)
+
     content_rows =
       lines
       |> Enum.with_index()
       |> Enum.map(fn {line, i} ->
-        s = Style.new(fg: :white, bg: {65, 65, 72 + rem(i, 2)})
+        bg = {65, 65, 72 + rem(i, 2)}
+
+        s =
+          if line in section_headers do
+            Style.new(fg: {100, 100, 100}, bg: bg)
+          else
+            Style.new(fg: :white, bg: bg)
+          end
+
         text(side <> String.pad_trailing(line, inner_w) <> side, s)
       end)
 
