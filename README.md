@@ -33,10 +33,12 @@ mv doer /usr/local/bin/
 | `e` / `i` | Edit todo |
 | `d` | Delete todo |
 | `space` | Toggle done |
+| `J` / `K` | Reorder todo |
 | `v` | Enter visual mode |
 | `/` | Search |
 | `G` / `g` | Jump to end / start |
 | `ctrl+d` / `ctrl+u` | Half page down / up |
+| `h` / `←` | Focus sidebar |
 | `\` | Toggle sidebar |
 | `Tab` | Switch focus |
 | `?` | Toggle help |
