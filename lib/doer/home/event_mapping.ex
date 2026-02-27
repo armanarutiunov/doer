@@ -63,6 +63,12 @@ defmodule Doer.Home.EventMapping do
   def event_to_msg(%Event.Key{key: " ", modifiers: []}, %{mode: :normal, show_help: false}),
     do: {:msg, :toggle_todo}
 
+  def event_to_msg(%Event.Key{key: "J", modifiers: []}, %{mode: :normal, show_help: false}),
+    do: {:msg, :move_current_down}
+
+  def event_to_msg(%Event.Key{key: "K", modifiers: []}, %{mode: :normal, show_help: false}),
+    do: {:msg, :move_current_up}
+
   def event_to_msg(%Event.Key{key: "v", modifiers: []}, %{mode: :normal, show_help: false}),
     do: {:msg, :enter_visual}
 

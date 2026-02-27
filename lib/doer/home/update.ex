@@ -306,6 +306,12 @@ defmodule Doer.Home.Update do
     {%{state | mode: :normal} |> Helpers.adjust_scroll()}
   end
 
+  def update(:move_current_down, state),
+    do: update(:move_selected_down, %{state | visual_anchor: state.cursor})
+
+  def update(:move_current_up, state),
+    do: update(:move_selected_up, %{state | visual_anchor: state.cursor})
+
   def update(:move_selected_down, state) do
     active = Enum.filter(state.todos, &(!&1.done))
     {sel_min, sel_max} = Helpers.selection_range(state)
