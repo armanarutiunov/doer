@@ -33,12 +33,28 @@ mv doer /usr/local/bin/
 | `e` / `i` | Edit todo |
 | `d` | Delete todo |
 | `space` | Toggle done |
+| `J` / `K` | Reorder todo |
 | `v` | Enter visual mode |
 | `/` | Search |
 | `G` / `g` | Jump to end / start |
 | `ctrl+d` / `ctrl+u` | Half page down / up |
+| `h` / `←` | Focus sidebar |
+| `\` | Toggle sidebar |
+| `Tab` | Switch focus |
 | `?` | Toggle help |
 | `q` | Quit |
+
+### Sidebar
+
+| Key | Action |
+|-----|--------|
+| `j` / `k` / arrows | Navigate |
+| `a` | Add project |
+| `s` | Add subproject |
+| `e` / `i` | Rename project |
+| `d` | Delete project |
+| `J` / `K` | Reorder projects |
+| `Enter` / `l` | Select project |
 
 ### Visual mode
 
@@ -60,4 +76,11 @@ mv doer /usr/local/bin/
 
 ## Data
 
-Todos are persisted as JSON at `~/.doer/todos.json`.
+```
+~/.doer/
+  all-todos.json          # ungrouped todos
+  projects/
+    <id>.json             # per-project todos
+```
+
+On first launch, `todos.json` is migrated to `all-todos.json`.

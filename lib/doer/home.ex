@@ -8,16 +8,33 @@ defmodule Doer.Home do
   @bottom_reserved 5
   @scroll_margin 5
   @prefix_w 4
+  @sidebar_width 35
 
   def pad_y_top, do: @pad_y_top
   def bottom_reserved, do: @bottom_reserved
   def scroll_margin, do: @scroll_margin
   def prefix_w, do: @prefix_w
+  def sidebar_width, do: @sidebar_width
 
   # --- Init ---
 
   def init(_opts) do
-    todos = Store.load()
+    Store.init()
+    ungrouped = Store.load_all_todos()
+    project_data = Store.load_projects()
+    projects = Enum.map(project_data, fn {p, _} -> p end)
+    project_todos = Map.new(project_data, fn {p, t} -> {p.id, t} end)
+
+    flat = Helpers.flat_ordered_projects(projects)
+
+    todos =
+      Enum.reduce(flat, ungrouped, fn project, acc ->
+        ptodos =
+          Map.get(project_todos, project.id, [])
+          |> Enum.map(&%{&1 | source: project.id})
+
+        acc ++ ptodos
+      end)
     {rows, cols} = TermUI.Platform.terminal_size()
     schedule_size_poll()
 
@@ -34,7 +51,19 @@ defmodule Doer.Home do
       show_help: false,
       scroll_offset: 0,
       terminal_width: cols,
-      terminal_height: rows
+      terminal_height: rows,
+      sidebar_open: true,
+      focus: :main,
+      sidebar_cursor: 0,
+      sidebar_scroll: 0,
+      projects: projects,
+      project_todos: project_todos,
+      current_view: :all,
+      view_states: %{},
+      sidebar_mode: :normal,
+      sidebar_editing_text: "",
+      sidebar_editing_id: nil,
+      sidebar_confirm_project_id: nil
     }
   end
 

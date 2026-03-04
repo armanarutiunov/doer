@@ -6,18 +6,223 @@ defmodule Doer.Home.View do
   alias Doer.Home.Helpers
 
   def view(state) do
-    content_w = content_width(state.terminal_width)
-    left_pad = div(state.terminal_width - content_w, 2)
-    pad_str = String.duplicate(" ", left_pad)
+    base =
+      if state.sidebar_open do
+        available_w = max(state.terminal_width - Home.sidebar_width() - 1, 10)
+        sidebar = render_sidebar(state)
+        main = render_main(state, available_w)
+        stack(:horizontal, [sidebar, main])
+      else
+        render_main(state, state.terminal_width)
+      end
 
-    # Top padding
+    help_overlays =
+      if state.show_help do
+        [render_help(state.terminal_width, state.terminal_height)]
+      else
+        []
+      end
+
+    case help_overlays do
+      [] -> base
+      ovs -> stack(:vertical, [base | ovs])
+    end
+  end
+
+  # --- Sidebar ---
+
+  # Near-invisible fg for space cells — needed so diff detects them vs Cell.empty()
+  defp spacer_style(idx), do: Style.new(fg: unique_rgb({1, 1, 1}, idx))
+
+  def render_sidebar(state) do
+    sw = Home.sidebar_width()
+    th = state.terminal_height
+    items = sidebar_items(state)
+    cursor_vi = cursor_to_visual(items, state.sidebar_cursor)
+
+    dim = Style.new(fg: :bright_black)
+    active_cursor_bg = Style.new(bg: {55, 51, 84})
+    inactive_cursor_bg = Style.new(bg: {50, 48, 60})
+
+    rows =
+      items
+      |> Enum.with_index()
+      |> Enum.map(fn {item, visual_idx} ->
+        render_sidebar_item(item, visual_idx, cursor_vi, state, sw, dim, active_cursor_bg, inactive_cursor_bg)
+      end)
+
+    # Pad to full height
+    pad_count = max(th - length(rows), 0)
+    pad_rows = if pad_count > 0, do: Enum.map(1..pad_count, fn i -> text(String.duplicate(" ", sw), spacer_style(i)) end), else: []
+
+    sidebar_content = stack(:vertical, rows ++ pad_rows)
+
+    # Right border — brighter when sidebar focused, dim when main focused
+    border_rgb = if state.focus == :sidebar, do: {100, 100, 110}, else: {50, 50, 55}
+    border =
+      stack(
+        :vertical,
+        Enum.map(1..th, fn i -> text("│", Style.new(fg: unique_rgb(border_rgb, i))) end)
+      )
+
+    stack(:horizontal, [sidebar_content, border])
+  end
+
+  defp sidebar_items(state) do
+    flat_projects = flat_ordered_projects(state.projects)
+
+    all_item = {:all, "All Todos", 0}
+    blank = {:blank, "", 0}
+    header = {:header, "Projects", 0}
+    header_spacing = {:blank, "", 0}
+
+    project_items =
+      Enum.map(flat_projects, fn p ->
+        depth = if p.parent_id, do: 1, else: 0
+        {:project, p, depth}
+      end)
+
+    # Inject editing row for new project/subproject
+    project_items =
+      if state.sidebar_mode == :insert do
+        case state.sidebar_editing_id do
+          nil ->
+            # New top-level project — append at end
+            project_items ++ [{:new_project, 0}]
+
+          {:new_child, parent_id} ->
+            # New subproject — insert after parent's last child
+            insert_idx =
+              project_items
+              |> Enum.with_index()
+              |> Enum.filter(fn {{:project, p, _}, _} -> p.id == parent_id or p.parent_id == parent_id end)
+              |> List.last()
+              |> then(fn {_, i} -> i + 1 end)
+
+            List.insert_at(project_items, insert_idx, {:new_project, 1})
+
+          _ ->
+            project_items
+        end
+      else
+        project_items
+      end
+
+    hint =
+      if project_items == [] and state.focus == :sidebar do
+        [{:hint, "press 'a' to create", 0}]
+      else
+        []
+      end
+
+    [all_item, blank, header, header_spacing] ++ project_items ++ hint
+  end
+
+  defp render_sidebar_item({:blank, _, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
+    text(String.duplicate(" ", sw), spacer_style(vi))
+  end
+
+  defp render_sidebar_item({:header, label, _}, _vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
+    padded = String.pad_trailing("  " <> label, sw)
+    text(padded, Style.new(fg: :bright_black))
+  end
+
+  defp render_sidebar_item({:hint, label, _}, vi, _cvi, _state, sw, _dim, _active_bg, _inactive_bg) do
+    padded = String.pad_trailing("    " <> label, sw)
+    text(padded, Style.new(fg: unique_rgb({80, 80, 80}, vi)))
+  end
+
+  defp render_sidebar_item({:new_project, depth}, _vi, _cvi, state, sw, _dim, active_bg, _inactive_bg) do
+    indent = String.duplicate("  ", depth + 1)
+    prefix = "# "
+    display = state.sidebar_editing_text <> "█"
+    label = indent <> prefix <> display
+    padded = String.slice(String.pad_trailing(label, sw), 0, sw)
+    row = text(padded, Style.new(fg: :green))
+    if state.focus == :sidebar, do: styled(row, active_bg), else: row
+  end
+
+  defp render_sidebar_item({:all, label, _}, vi, cvi, state, sw, _dim, active_bg, inactive_bg) do
+    is_cursor = vi == cvi
+    is_selected = state.current_view == :all
+
+    style = if is_selected, do: Style.new(fg: :white, attrs: [:bold]), else: Style.new(fg: unique_rgb({200, 200, 200}, vi))
+
+    padded = String.pad_trailing("  " <> label, sw)
+    row = text(padded, style)
+
+    cond do
+      is_cursor and state.focus == :sidebar -> styled(row, active_bg)
+      is_cursor -> styled(row, inactive_bg)
+      true -> row
+    end
+  end
+
+  defp render_sidebar_item({:project, project, depth}, vi, cvi, state, sw, _dim, active_bg, inactive_bg) do
+    is_cursor = vi == cvi
+    is_selected = state.current_view == {:project, project.id}
+
+    indent = String.duplicate("  ", depth + 1)
+    prefix = "# "
+
+    {display, style} =
+      cond do
+        state.sidebar_mode == :insert and state.sidebar_editing_id == project.id ->
+          {state.sidebar_editing_text <> "█", Style.new(fg: :green)}
+
+        state.sidebar_mode == :confirm_delete and state.sidebar_confirm_project_id == project.id ->
+          {"Delete? y/n", Style.new(fg: :red)}
+
+        is_selected ->
+          {project.name, Style.new(fg: :white, attrs: [:bold])}
+
+        true ->
+          {project.name, Style.new(fg: unique_rgb({200, 200, 200}, vi))}
+      end
+
+    label = indent <> prefix <> display
+    padded = String.pad_trailing(label, sw)
+    # Truncate if too long
+    padded = String.slice(padded, 0, sw)
+    row = text(padded, style)
+
+    cond do
+      is_cursor and state.focus == :sidebar -> styled(row, active_bg)
+      is_cursor -> styled(row, inactive_bg)
+      true -> row
+    end
+  end
+
+  defp cursor_to_visual(items, cursor) do
+    # Items: 0=All, 1=blank, 2=header, 3=spacing, 4+=projects
+    project_items = Enum.drop(items, 4)
+
+    if cursor == 0 do
+      0
+    else
+      project_idx = cursor - 1
+
+      if project_idx < length(project_items) do
+        4 + project_idx
+      else
+        0
+      end
+    end
+  end
+
+  defdelegate flat_ordered_projects(projects), to: Helpers
+
+  # --- Main content ---
+
+  def render_main(state, available_width) do
+    content_w = content_width(available_width)
+    left_pad = div(available_width - content_w, 2)
+    pad_str = String.duplicate(" ", max(left_pad, 0))
+
     top_pad = blank_rows(Home.pad_y_top())
-
-    # Todo list rows — slice visible range directly (no viewport)
     list_rows = render_list(state, content_w, pad_str)
     vh = max(state.terminal_height - Home.pad_y_top() - Home.bottom_reserved(), 1)
 
-    # Clamp scroll so we don't over-scroll past content
     max_offset = max(length(list_rows) - vh, 0)
     scroll = min(state.scroll_offset, max_offset)
 
@@ -26,31 +231,20 @@ defmodule Doer.Home.View do
       |> Enum.drop(scroll)
       |> Enum.take(vh)
 
-    # Pad to push bottom section to the bottom when content is short
     pad_count = vh - length(visible_rows)
     visible_pad = if pad_count > 0, do: blank_rows(pad_count), else: []
 
-    # Bottom section: spacer + search/empty + blank + mode bar
     bottom_rows = render_bottom(state, content_w, pad_str)
 
     all = top_pad ++ visible_rows ++ visible_pad ++ bottom_rows
-    base = stack(:vertical, all)
-
-    if state.show_help do
-      help = render_help(state.terminal_width, state.terminal_height)
-      stack(:vertical, [base, help])
-    else
-      base
-    end
+    stack(:vertical, all)
   end
 
-  # Offset RGB blue channel by 1 per row to prevent terminal renderer
-  # from merging adjacent cells with identical styles during scroll
   defp unique_rgb({r, g, b}, idx) when b >= 255, do: {r, g, b - rem(idx, 2)}
   defp unique_rgb({r, g, b}, idx), do: {r, g, b + rem(idx, 2)}
 
-  def content_width(tw) do
-    max(trunc(tw * 0.6), 20)
+  def content_width(available_width) do
+    max(trunc(available_width * 0.6), 20)
   end
 
   def blank_rows(0), do: []
@@ -59,26 +253,37 @@ defmodule Doer.Home.View do
   def render_list(state, content_w, pad_str) do
     {disp_active, disp_completed} = Helpers.display_todos(state)
 
-    active_header = [render_section_header("Todos", "Created", content_w, pad_str)]
-    active_header_spacing = blank_rows(1)
+    has_project_todos = state.current_view == :all and Enum.any?(disp_active, & &1.source)
+    show_sections = has_project_todos and state.mode not in [:search, :search_nav]
 
     active_rows =
-      if length(disp_active) == 0 do
-        empty_style = Style.new(fg: :bright_black)
-
-        [
-          stack(:horizontal, [
-            text(pad_str, nil),
-            text(String.duplicate(" ", Home.prefix_w()), nil),
-            text("press 'a' to add a new todo", empty_style)
-          ])
-        ]
+      if show_sections do
+        render_sectioned_active(disp_active, state, content_w, pad_str)
       else
-        disp_active
-        |> Enum.with_index()
-        |> Enum.flat_map(fn {todo, idx} ->
-          render_todo_row(todo, idx, state, false, content_w, pad_str)
-        end)
+        title = view_title(state)
+        header = [render_section_header(title, "Created", content_w, pad_str)]
+        spacing = blank_rows(1)
+
+        rows =
+          if length(disp_active) == 0 do
+            empty_style = Style.new(fg: :bright_black)
+
+            [
+              stack(:horizontal, [
+                text(pad_str, nil),
+                text(String.duplicate(" ", Home.prefix_w()), nil),
+                text("press 'a' to add a new todo", empty_style)
+              ])
+            ]
+          else
+            disp_active
+            |> Enum.with_index()
+            |> Enum.flat_map(fn {todo, idx} ->
+              render_todo_row(todo, idx, state, false, content_w, pad_str)
+            end)
+          end
+
+        header ++ spacing ++ rows
       end
 
     section_spacing = if length(disp_completed) > 0, do: blank_rows(2), else: []
@@ -99,10 +304,51 @@ defmodule Doer.Home.View do
         render_todo_row(todo, idx, state, true, content_w, pad_str)
       end)
 
-    active_header ++
-      active_header_spacing ++
-      active_rows ++
+    active_rows ++
       section_spacing ++ completed_header ++ spacing_above_completed ++ completed_rows
+  end
+
+  defp render_sectioned_active(disp_active, state, content_w, pad_str) do
+    disp_active
+    |> Enum.with_index()
+    |> Enum.chunk_by(fn {todo, _} -> todo.source end)
+    |> Enum.with_index()
+    |> Enum.flat_map(fn {group, group_idx} ->
+      {first_todo, _} = hd(group)
+      source = first_todo.source
+
+      label =
+        if source do
+          project = Enum.find(state.projects, &(&1.id == source))
+          if project, do: Doer.Home.SidebarUpdate.section_label(state.projects, project), else: "Todos"
+        else
+          "Todos"
+        end
+
+      spacing = if group_idx > 0, do: blank_rows(2), else: []
+      header = [render_section_header(label, "Created", content_w, pad_str, group_idx)]
+      header_spacing = blank_rows(1)
+
+      rows =
+        Enum.flat_map(group, fn {todo, idx} ->
+          render_todo_row(todo, idx, state, false, content_w, pad_str)
+        end)
+
+      spacing ++ header ++ header_spacing ++ rows
+    end)
+  end
+
+  defp view_title(state) do
+    case state.current_view do
+      :all ->
+        "Todos"
+
+      {:project, id} ->
+        case Enum.find(state.projects, &(&1.id == id)) do
+          nil -> "Todos"
+          project -> "# #{project.name} todos"
+        end
+    end
   end
 
   def render_section_header(title, date_label, content_w, pad_str, idx \\ 0) do
@@ -129,13 +375,11 @@ defmodule Doer.Home.View do
         ((state.editing_id == nil and idx == state.cursor) or
            state.editing_id == todo.id)
 
-    # Determine age strings
     age_str = Todo.age_label(todo)
 
     completed_age_str =
       if is_completed and todo.completed_at, do: Todo.completed_label(todo), else: nil
 
-    # Right column: aligned with "Created" (7) or "Created  Completed" (7+2+9)
     right_col = "  " <> String.pad_leading(age_str, 7)
 
     right_col =
@@ -144,23 +388,15 @@ defmodule Doer.Home.View do
         else: right_col
 
     right_w = String.length(right_col)
-
-    # Available width for text (after indicator + checkbox, before age)
     text_area_w = max(content_w - Home.prefix_w() - right_w, 10)
-
-    # Build display text
     display_text = if is_editing, do: state.editing_text <> "█", else: todo.text
-
-    # Wrap text into lines
     lines = Helpers.wrap_text(display_text, text_area_w)
 
-    # Indicator + checkbox prefix
     indicator = if is_selected, do: "▎ ", else: "  "
     checkbox = if is_completed, do: "◉ ", else: "◯ "
     prefix = indicator <> checkbox
     continuation_prefix = String.duplicate(" ", Home.prefix_w())
 
-    # Style
     text_style =
       cond do
         is_editing -> Style.new(fg: :green)
@@ -170,10 +406,13 @@ defmodule Doer.Home.View do
       end
 
     right_style = Style.new(fg: unique_rgb({140, 140, 140}, idx))
+    main_focused = not state.sidebar_open or state.focus == :main
+    cursor_bg = cond do
+      not is_cursor or is_editing -> nil
+      main_focused -> Style.new(bg: {55, 51, 84})
+      true -> Style.new(bg: {50, 48, 60})
+    end
 
-    cursor_bg = if is_cursor and not is_editing, do: Style.new(bg: {55, 51, 84}), else: nil
-
-    # Build rows — first line has prefix + text + right-aligned age
     lines
     |> Enum.with_index()
     |> Enum.map(fn {line, line_idx} ->
@@ -206,7 +445,6 @@ defmodule Doer.Home.View do
   end
 
   def render_bottom(state, content_w, pad_str) do
-    # Always 3 lines: spacer + search_or_empty + mode_bar
     spacer = [text("", nil)]
 
     search_line =
@@ -229,17 +467,14 @@ defmodule Doer.Home.View do
     mode_text = " #{label} "
     mode_w = String.length(mode_text)
 
-    # Completed count
     total = length(state.todos)
     done = Enum.count(state.todos, & &1.done)
     count_text = "#{done}/#{total} completed"
     count_w = String.length(count_text)
 
-    # Help hint
     hint_text = if state.mode == :normal and not state.show_help, do: "? for help", else: ""
     hint_w = String.length(hint_text)
 
-    # Padding between mode, count, and hint to fill content_w
     remaining = max(content_w - mode_w - count_w - hint_w, 0)
     left_gap = div(remaining, 2)
     right_gap = remaining - left_gap
@@ -259,39 +494,86 @@ defmodule Doer.Home.View do
   end
 
   def render_help(tw, th) do
-    lines = [
+    left_lines = [
       "",
-      "Keybindings",
+      "Normal",
       "",
       "j/k/↑/↓   navigate",
       "a          add todo",
       "e/i        edit todo",
       "d          delete todo",
       "space      toggle done",
+      "J/K        reorder todo",
       "v          visual mode",
-      "J/K        reorder (visual)",
       "/          search",
-      "G          go to end",
-      "g          go to start",
-      "ctrl+d     half page down",
-      "ctrl+u     half page up",
-      "?          toggle help",
-      "q          quit",
+      "G/g        end / start",
+      "ctrl+d/u   half page down/up",
+      "h/←        focus sidebar",
+      "\\          toggle sidebar",
+      "Tab        switch focus",
+      "?          help   q  quit",
+      "",
+      "Visual",
+      "",
+      "j/k        extend selection",
+      "J/K        reorder selected",
+      "d          delete selected",
+      "space      toggle selected",
+      "Esc        exit visual",
       ""
     ]
 
-    pad_x = 4
-    inner_w = 30
-    box_w = inner_w + pad_x * 2
-    box_h = length(lines)
+    right_lines = [
+      "",
+      "Search",
+      "",
+      "type       filter todos",
+      "Enter      navigate results",
+      "Esc        cancel search",
+      "",
+      "Sidebar",
+      "",
+      "j/k/↑/↓   navigate",
+      "a          add project",
+      "s          add subproject",
+      "e/i        rename project",
+      "d          delete project",
+      "J/K        reorder projects",
+      "Enter/l    select project",
+      ""
+    ]
+
+    pad_x = 3
+    col_w = 30
+    gap = 2
+    section_headers = ~w(Normal Visual Search Sidebar)
+
+    row_count = max(length(left_lines), length(right_lines))
+    left_padded = left_lines ++ List.duplicate("", row_count - length(left_lines))
+    right_padded = right_lines ++ List.duplicate("", row_count - length(right_lines))
+
     side = String.duplicate(" ", pad_x)
+    gap_str = String.duplicate(" ", gap)
+    box_w = pad_x + col_w + gap + col_w + pad_x
 
     content_rows =
-      lines
+      [left_padded, right_padded]
+      |> Enum.zip()
       |> Enum.with_index()
-      |> Enum.map(fn {line, i} ->
-        s = Style.new(fg: :white, bg: {65, 65, 72 + rem(i, 2)})
-        text(side <> String.pad_trailing(line, inner_w) <> side, s)
+      |> Enum.map(fn {{left, right}, i} ->
+        bg = {65, 65, 72 + rem(i, 2)}
+
+        left_s = if left in section_headers, do: Style.new(fg: {100, 100, 100}, bg: bg), else: Style.new(fg: :white, bg: bg)
+        right_s = if right in section_headers, do: Style.new(fg: {100, 100, 100}, bg: bg), else: Style.new(fg: :white, bg: bg)
+        bg_s = Style.new(bg: bg)
+
+        stack(:horizontal, [
+          text(side, bg_s),
+          text(String.pad_trailing(left, col_w), left_s),
+          text(gap_str, bg_s),
+          text(String.pad_trailing(right, col_w), right_s),
+          text(side, bg_s)
+        ])
       end)
 
     help_content = stack(:vertical, content_rows)
@@ -300,10 +582,10 @@ defmodule Doer.Home.View do
       type: :overlay,
       content: help_content,
       x: max(div(tw - box_w, 2), 0),
-      y: max(div(th - box_h, 2), 0),
+      y: max(div(th - row_count, 2), 0),
       z: 100,
       width: box_w,
-      height: box_h,
+      height: row_count,
       bg: nil
     }
   end

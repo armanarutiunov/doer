@@ -2,12 +2,64 @@ defmodule Doer.Home.Update do
   alias Doer.{Todo, Store}
   alias Doer.Home.Helpers
 
+  defp save_todos(state) do
+    case state.current_view do
+      {:project, id} ->
+        project = Enum.find(state.projects, &(&1.id == id))
+        if project, do: Store.save_project(project, state.todos)
+        %{state | project_todos: Map.put(state.project_todos, id, state.todos)}
+
+      :all ->
+        ungrouped = Enum.filter(state.todos, &is_nil(&1.source))
+        Store.save_all_todos(ungrouped)
+
+        project_groups = state.todos |> Enum.filter(& &1.source) |> Enum.group_by(& &1.source)
+
+        project_todos =
+          Enum.reduce(project_groups, state.project_todos, fn {pid, todos}, acc ->
+            project = Enum.find(state.projects, &(&1.id == pid))
+            if project, do: Store.save_project(project, todos)
+            Map.put(acc, pid, todos)
+          end)
+
+        # Save empty for projects that had all todos removed
+        project_todos =
+          Enum.reduce(state.project_todos, project_todos, fn {pid, _}, acc ->
+            unless Map.has_key?(project_groups, pid) do
+              project = Enum.find(state.projects, &(&1.id == pid))
+              if project, do: Store.save_project(project, [])
+              Map.put(acc, pid, [])
+            else
+              acc
+            end
+          end)
+
+        %{state | project_todos: project_todos}
+    end
+  end
+
   def update({:resize, w, h}, state),
     do: {%{state | terminal_width: w, terminal_height: h} |> Helpers.adjust_scroll()}
 
   def update(:quit, state) do
-    Store.save(state.todos)
+    state = save_todos(state)
     {state, [:quit]}
+  end
+
+  def update(:toggle_sidebar, state) do
+    if state.sidebar_open do
+      {%{state | sidebar_open: false, focus: :main, sidebar_mode: :normal,
+         sidebar_editing_text: "", sidebar_editing_id: nil, sidebar_confirm_project_id: nil}
+       |> Helpers.adjust_scroll()}
+    else
+      {%{state | sidebar_open: true, focus: :sidebar}
+       |> Helpers.adjust_scroll()}
+    end
+  end
+
+  def update(:switch_focus, state) do
+    new_focus = if state.focus == :main, do: :sidebar, else: :main
+    {%{state | focus: new_focus}}
   end
 
   def update(:cursor_down, state) do
@@ -41,7 +93,15 @@ defmodule Doer.Home.Update do
 
   # Add todo
   def update(:add_todo, state) do
-    new_todo = Todo.new("")
+    source =
+      case state.current_view do
+        :all ->
+          active = Enum.filter(state.todos, &(!&1.done))
+          Doer.Home.SidebarUpdate.section_for_cursor(state, min(state.cursor, length(active) - 1))
+        {:project, _} -> nil
+      end
+
+    new_todo = %{Todo.new("") | source: source}
     active = Enum.filter(state.todos, &(!&1.done))
     insert_pos = min(state.cursor + 1, length(active))
 
@@ -132,7 +192,7 @@ defmodule Doer.Home.Update do
       }
       |> Helpers.adjust_scroll()
 
-    Store.save(state.todos)
+    state = save_todos(state)
     {state}
   end
 
@@ -186,8 +246,8 @@ defmodule Doer.Home.Update do
       todo ->
         todos = Enum.reject(state.todos, &(&1.id == todo.id))
         cursor = Helpers.clamp_cursor(state.cursor, todos)
-        Store.save(todos)
-        {%{state | todos: todos, cursor: cursor} |> Helpers.adjust_scroll()}
+        state = save_todos(%{state | todos: todos})
+        {%{state | cursor: cursor} |> Helpers.adjust_scroll()}
     end
   end
 
@@ -205,8 +265,8 @@ defmodule Doer.Home.Update do
             if t.id == todo.id, do: Todo.toggle(t), else: t
           end)
 
-        Store.save(todos)
-        {%{state | todos: todos}}
+        state = save_todos(%{state | todos: todos})
+        {state}
     end
   end
 
@@ -230,8 +290,8 @@ defmodule Doer.Home.Update do
     selected_ids = Helpers.selected_todo_ids(state)
     todos = Enum.reject(state.todos, &(&1.id in selected_ids))
     cursor = Helpers.clamp_cursor(state.cursor, todos)
-    Store.save(todos)
-    {%{state | mode: :normal, todos: todos, cursor: cursor} |> Helpers.adjust_scroll()}
+    state = save_todos(%{state | todos: todos})
+    {%{state | mode: :normal, cursor: cursor} |> Helpers.adjust_scroll()}
   end
 
   def update(:toggle_selected, state) do
@@ -242,37 +302,61 @@ defmodule Doer.Home.Update do
         if t.id in selected_ids, do: Todo.toggle(t), else: t
       end)
 
-    Store.save(todos)
-    {%{state | mode: :normal, todos: todos} |> Helpers.adjust_scroll()}
+    state = save_todos(%{state | todos: todos})
+    {%{state | mode: :normal} |> Helpers.adjust_scroll()}
   end
+
+  def update(:move_current_down, state),
+    do: update(:move_selected_down, %{state | visual_anchor: state.cursor})
+
+  def update(:move_current_up, state),
+    do: update(:move_selected_up, %{state | visual_anchor: state.cursor})
 
   def update(:move_selected_down, state) do
     active = Enum.filter(state.todos, &(!&1.done))
     {sel_min, sel_max} = Helpers.selection_range(state)
 
     if sel_max < length(active) - 1 do
-      active_list = Enum.with_index(active)
+      item_below = Enum.at(active, sel_max + 1)
+      sel_source = Enum.at(active, sel_min).source
 
-      {selected, rest} =
-        Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
+      # Crossing section boundary in :all view: change source only, no swap
+      if state.current_view == :all and item_below.source != sel_source do
+        selected_ids = for i <- sel_min..sel_max, do: Enum.at(active, i).id
 
-      {before_swap, [swap_item | after_swap]} = Enum.split(rest, sel_min)
+        todos =
+          Enum.map(state.todos, fn t ->
+            if t.id in selected_ids, do: %{t | source: item_below.source}, else: t
+          end)
 
-      new_active =
-        Enum.map(before_swap, &elem(&1, 0)) ++
-          [elem(swap_item, 0)] ++
-          Enum.map(selected, &elem(&1, 0)) ++
-          Enum.map(after_swap, &elem(&1, 0))
+        state = save_todos(%{state | todos: todos})
+        {state |> Helpers.adjust_scroll()}
+      else
+        # Within section: normal swap
+        active_list = Enum.with_index(active)
 
-      completed = Enum.filter(state.todos, & &1.done)
+        {selected, rest} =
+          Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
 
-      {%{
-         state
-         | todos: new_active ++ completed,
-           cursor: state.cursor + 1,
-           visual_anchor: state.visual_anchor + 1
-       }
-       |> Helpers.adjust_scroll()}
+        {before_swap, [swap_item | after_swap]} = Enum.split(rest, sel_min)
+
+        new_active =
+          Enum.map(before_swap, &elem(&1, 0)) ++
+            [elem(swap_item, 0)] ++
+            Enum.map(selected, &elem(&1, 0)) ++
+            Enum.map(after_swap, &elem(&1, 0))
+
+        completed = Enum.filter(state.todos, & &1.done)
+
+        state =
+          %{state | todos: new_active ++ completed,
+            cursor: state.cursor + 1,
+            visual_anchor: state.visual_anchor + 1}
+          |> Helpers.adjust_scroll()
+
+        state = save_todos(state)
+        {state}
+      end
     else
       :noreply
     end
@@ -280,36 +364,69 @@ defmodule Doer.Home.Update do
 
   def update(:move_selected_up, state) do
     active = Enum.filter(state.todos, &(!&1.done))
-    {sel_min, _sel_max} = Helpers.selection_range(state)
+    {sel_min, sel_max} = Helpers.selection_range(state)
 
     if sel_min > 0 do
-      active_list = Enum.with_index(active)
+      item_above = Enum.at(active, sel_min - 1)
+      sel_source = Enum.at(active, sel_min).source
 
-      {selected, rest} =
-        Enum.split_with(active_list, fn {_, i} ->
-          i >= sel_min and i <= elem(Helpers.selection_range(state), 1)
-        end)
+      # Crossing section boundary in :all view: change source only, no swap
+      if state.current_view == :all and item_above.source != sel_source do
+        selected_ids = for i <- sel_min..sel_max, do: Enum.at(active, i).id
 
-      {before, after_list} = Enum.split(rest, sel_min - 1)
+        todos =
+          Enum.map(state.todos, fn t ->
+            if t.id in selected_ids, do: %{t | source: item_above.source}, else: t
+          end)
 
-      new_active =
-        Enum.map(before, &elem(&1, 0)) ++
-          Enum.map(selected, &elem(&1, 0)) ++
-          Enum.map(after_list, &elem(&1, 0))
+        state = save_todos(%{state | todos: todos})
+        {state |> Helpers.adjust_scroll()}
+      else
+        # Within section: normal swap
+        active_list = Enum.with_index(active)
 
-      completed = Enum.filter(state.todos, & &1.done)
+        {selected, rest} =
+          Enum.split_with(active_list, fn {_, i} -> i >= sel_min and i <= sel_max end)
 
-      {%{
-         state
-         | todos: new_active ++ completed,
-           cursor: state.cursor - 1,
-           visual_anchor: state.visual_anchor - 1
-       }
-       |> Helpers.adjust_scroll()}
+        {before, [swap | after_rest]} = Enum.split(rest, sel_min - 1)
+
+        new_active =
+          Enum.map(before, &elem(&1, 0)) ++
+            Enum.map(selected, &elem(&1, 0)) ++
+            [elem(swap, 0)] ++
+            Enum.map(after_rest, &elem(&1, 0))
+
+        completed = Enum.filter(state.todos, & &1.done)
+
+        state =
+          %{state | todos: new_active ++ completed,
+            cursor: state.cursor - 1,
+            visual_anchor: state.visual_anchor - 1}
+          |> Helpers.adjust_scroll()
+
+        state = save_todos(state)
+        {state}
+      end
     else
       :noreply
     end
   end
+
+  # Sidebar messages — delegate to SidebarUpdate
+  def update(msg, state) when msg in [
+    :sidebar_down, :sidebar_up, :sidebar_select,
+    :sidebar_add_project, :sidebar_add_subproject,
+    :sidebar_rename_project, :sidebar_delete_project,
+    :sidebar_confirm_delete, :sidebar_cancel_delete,
+    :sidebar_confirm_edit, :sidebar_cancel_edit,
+    :sidebar_backspace,
+    :sidebar_reorder_down, :sidebar_reorder_up
+  ] do
+    Doer.Home.SidebarUpdate.update(msg, state)
+  end
+
+  def update({:sidebar_type_char, _} = msg, state),
+    do: Doer.Home.SidebarUpdate.update(msg, state)
 
   # Search
   def update(:enter_search, state),
