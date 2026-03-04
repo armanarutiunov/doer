@@ -31,15 +31,33 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           SHA256=$(shasum -a 256 doer | cut -d' ' -f1)
+          RELEASE_URL="https://github.com/armanarutiumov/doer/releases/download/${GITHUB_REF_NAME}/doer"
 
           git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiumov/homebrew-doer.git /tmp/tap
           cd /tmp/tap
 
-          sed -i "s|url \".*\"|url \"https://github.com/armanarutiumov/doer/releases/download/${GITHUB_REF_NAME}/doer\"|" Formula/doer.rb
-          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/doer.rb
-          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/doer.rb
+          cat > Formula/doer.rb << EOF
+          class Doer < Formula
+            desc "Vim-inspired TUI todo app"
+            homepage "https://github.com/armanarutiumov/doer"
+            url "${RELEASE_URL}"
+            version "${VERSION}"
+            sha256 "${SHA256}"
+            license "MIT"
+
+            depends_on "erlang"
+
+            def install
+              bin.install "doer"
+            end
+
+            test do
+              assert_match "doer", shell_output("#{bin}/doer --help 2>&1", 0)
+            end
+          end
+          EOF
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Formula/doer.rb
-          git diff --cached --quiet || git commit -m "doer ${VERSION}" && git push
+          git diff --cached --quiet || (git commit -m "doer ${VERSION}" && git push)
