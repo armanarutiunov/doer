@@ -26,3 +26,20 @@ jobs:
         with:
           files: doer
           generate_release_notes: true
+
+      - name: Update Homebrew tap
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA256=$(shasum -a 256 doer | cut -d' ' -f1)
+
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiumov/homebrew-doer.git /tmp/tap
+          cd /tmp/tap
+
+          sed -i "s|url \".*\"|url \"https://github.com/armanarutiumov/doer/releases/download/${GITHUB_REF_NAME}/doer\"|" Formula/doer.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/doer.rb
+          sed -i "s|version \".*\"|version \"${VERSION}\"|" Formula/doer.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/doer.rb
+          git diff --cached --quiet || git commit -m "doer ${VERSION}" && git push
