@@ -31,15 +31,15 @@ jobs:
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
           SHA256=$(shasum -a 256 doer | cut -d' ' -f1)
-          RELEASE_URL="https://github.com/armanarutiumov/doer/releases/download/${GITHUB_REF_NAME}/doer"
+          RELEASE_URL="https://github.com/armanarutiunov/doer/releases/download/${GITHUB_REF_NAME}/doer"
 
-          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiumov/homebrew-doer.git /tmp/tap
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiunov/homebrew-doer.git /tmp/tap
           cd /tmp/tap
 
           cat > Formula/doer.rb << EOF
           class Doer < Formula
             desc "Vim-inspired TUI todo app"
-            homepage "https://github.com/armanarutiumov/doer"
+            homepage "https://github.com/armanarutiunov/doer"
             url "${RELEASE_URL}"
             version "${VERSION}"
             sha256 "${SHA256}"
