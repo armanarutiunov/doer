@@ -494,7 +494,7 @@ defmodule Doer.Home.View do
   end
 
   def render_help(tw, th) do
-    lines = [
+    left_lines = [
       "",
       "Normal",
       "",
@@ -520,6 +520,10 @@ defmodule Doer.Home.View do
       "d          delete selected",
       "space      toggle selected",
       "Esc        exit visual",
+      ""
+    ]
+
+    right_lines = [
       "",
       "Search",
       "",
@@ -539,28 +543,37 @@ defmodule Doer.Home.View do
       ""
     ]
 
-    pad_x = 4
-    inner_w = 30
-    box_w = inner_w + pad_x * 2
-    box_h = length(lines)
-    side = String.duplicate(" ", pad_x)
-
+    pad_x = 3
+    col_w = 30
+    gap = 2
     section_headers = ~w(Normal Visual Search Sidebar)
 
+    row_count = max(length(left_lines), length(right_lines))
+    left_padded = left_lines ++ List.duplicate("", row_count - length(left_lines))
+    right_padded = right_lines ++ List.duplicate("", row_count - length(right_lines))
+
+    side = String.duplicate(" ", pad_x)
+    gap_str = String.duplicate(" ", gap)
+    box_w = pad_x + col_w + gap + col_w + pad_x
+
     content_rows =
-      lines
+      [left_padded, right_padded]
+      |> Enum.zip()
       |> Enum.with_index()
-      |> Enum.map(fn {line, i} ->
+      |> Enum.map(fn {{left, right}, i} ->
         bg = {65, 65, 72 + rem(i, 2)}
 
-        s =
-          if line in section_headers do
-            Style.new(fg: {100, 100, 100}, bg: bg)
-          else
-            Style.new(fg: :white, bg: bg)
-          end
+        left_s = if left in section_headers, do: Style.new(fg: {100, 100, 100}, bg: bg), else: Style.new(fg: :white, bg: bg)
+        right_s = if right in section_headers, do: Style.new(fg: {100, 100, 100}, bg: bg), else: Style.new(fg: :white, bg: bg)
+        bg_s = Style.new(bg: bg)
 
-        text(side <> String.pad_trailing(line, inner_w) <> side, s)
+        stack(:horizontal, [
+          text(side, bg_s),
+          text(String.pad_trailing(left, col_w), left_s),
+          text(gap_str, bg_s),
+          text(String.pad_trailing(right, col_w), right_s),
+          text(side, bg_s)
+        ])
       end)
 
     help_content = stack(:vertical, content_rows)
@@ -569,10 +582,10 @@ defmodule Doer.Home.View do
       type: :overlay,
       content: help_content,
       x: max(div(tw - box_w, 2), 0),
-      y: max(div(th - box_h, 2), 0),
+      y: max(div(th - row_count, 2), 0),
       z: 100,
       width: box_w,
-      height: box_h,
+      height: row_count,
       bg: nil
     }
   end
