@@ -1,14 +1,8 @@
 //! Where each region of the screen goes. Purely geometric — nothing here reads state
 //! beyond the sidebar flag.
 
+use doer_core::layout::{BORDER_WIDTH, Geometry, PAD_Y_TOP, SIDEBAR_WIDTH};
 use ratatui::layout::{Constraint, Layout, Rect};
-
-pub const SIDEBAR_WIDTH: u16 = 35;
-pub const BORDER_WIDTH: u16 = 1;
-const CONTENT_PERCENT: u32 = 60;
-const CONTENT_MIN_WIDTH: u16 = 20;
-const PAD_TOP: u16 = 1;
-/// blank, search line, blank, mode bar, blank
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frames {
@@ -23,12 +17,13 @@ pub struct Frames {
     pub sidebar_fits: bool,
 }
 
-/// Smallest width that still leaves the content column its minimum beside a sidebar.
-const SIDEBAR_MIN_TOTAL: u16 = SIDEBAR_WIDTH + BORDER_WIDTH + CONTENT_MIN_WIDTH;
-
 #[must_use]
 pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
-    let sidebar_fits = area.width >= SIDEBAR_MIN_TOTAL;
+    // Both the geometry the scroll maths uses and the rectangles drawn here have to
+    // agree about the sidebar and the column width, so both come from `Geometry`. Two
+    // copies of this arithmetic is exactly the class of bug this port removes.
+    let geo = Geometry::new(area.width, area.height, sidebar_open);
+    let sidebar_fits = geo.sidebar_visible() || !sidebar_open;
     let (sidebar, border, body) = if sidebar_open && sidebar_fits {
         let [sidebar, border, body] = Layout::horizontal([
             Constraint::Length(SIDEBAR_WIDTH),
@@ -45,9 +40,9 @@ pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
     // under the list. Rows are built to fit it: the date columns shrink or drop
     // (`DateColumns::fit`) and the mode bar shortens its counter, so nothing needs to
     // overflow into the padding to stay readable.
-    let column = centred_column(body);
+    let column = centred_column(body, geo);
     let [_, content, _, search, _, modebar, _] = Layout::vertical([
-        Constraint::Length(PAD_TOP),
+        Constraint::Length(PAD_Y_TOP),
         Constraint::Min(1),
         Constraint::Length(1),
         Constraint::Length(1),
@@ -69,8 +64,8 @@ pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
 
 /// `Flex::Center` rounds the odd remainder column to the left; the Elixir build floored
 /// it to the right. That one column is visible, so the padding is explicit instead.
-fn centred_column(body: Rect) -> Rect {
-    let width = content_width(body.width);
+fn centred_column(body: Rect, geo: Geometry) -> Rect {
+    let width = geo.content_width().min(body.width);
     let [_, column, _] = Layout::horizontal([
         Constraint::Length((body.width - width) / 2),
         Constraint::Length(width),
@@ -80,20 +75,16 @@ fn centred_column(body: Rect) -> Rect {
     column
 }
 
-/// Integer form of the original `trunc(available * 0.6)`; the two agree for every width
-/// a terminal can have.
-#[must_use]
-pub fn content_width(available: u16) -> u16 {
-    let scaled = u16::try_from(u32::from(available) * CONTENT_PERCENT / 100).unwrap_or(u16::MAX);
-    scaled.max(CONTENT_MIN_WIDTH).min(available)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn screen(width: u16, height: u16) -> Rect {
         Rect::new(0, 0, width, height)
+    }
+
+    fn content_width(available: u16) -> u16 {
+        Geometry::new(available, 24, false).content_width()
     }
 
     fn content_left_pad(available: u16) -> u16 {
@@ -108,12 +99,21 @@ mod tests {
         assert_eq!(f.content.width, 48);
     }
 
+    /// The scroll maths derives the viewport height from `PAD_Y_TOP + BOTTOM_RESERVED`
+    /// while the rows here are laid out one constraint at a time. If those two ever
+    /// disagree, the list scrolls against a height it is not drawn at.
     #[test]
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    fn content_width_matches_the_original_float_maths() {
-        for available in 1..=1000u16 {
-            let expected = ((f64::from(available) * 0.6) as u16).max(20).min(available);
-            assert_eq!(content_width(available), expected, "width {available}");
+    fn the_drawn_viewport_is_the_height_the_scroll_maths_assumes() {
+        for height in 8..60u16 {
+            for open in [false, true] {
+                let f = frames(screen(100, height), open);
+                let geo = Geometry::new(100, height, open);
+                assert_eq!(
+                    usize::from(f.content.height),
+                    geo.viewport_height(),
+                    "height {height}, sidebar {open}"
+                );
+            }
         }
     }
 
