@@ -40,6 +40,10 @@ pub fn wrap_lines(text: &str, max_width: usize) -> Vec<WrappedLine> {
 
     let mut lines: Vec<WrappedLine> = Vec::new();
     let mut current = String::new();
+    // Splitting on a space yields an empty word for a trailing one. Appending it is a
+    // no-op, but pushing the line first is not: it would emit a blank continuation row,
+    // which the scroll model would then reserve space for.
+    let trailing_space = text.ends_with(' ');
     let mut current_width = 0;
     // Where the line being built starts, and where the source has been consumed to.
     let mut current_start = 0;
@@ -52,7 +56,15 @@ pub fn wrap_lines(text: &str, max_width: usize) -> Vec<WrappedLine> {
         });
     };
 
-    for (index, word) in text.split(' ').enumerate() {
+    let words: Vec<&str> = {
+        let mut words: Vec<&str> = text.split(' ').collect();
+        if trailing_space {
+            words.pop();
+        }
+        words
+    };
+
+    for (index, word) in words.into_iter().enumerate() {
         let word_width = width(word);
         // Every split consumed one space from the source except before the first word.
         if index > 0 {
@@ -420,6 +432,18 @@ mod tests {
         let lines = wrap_lines("abcdefgh", 3);
         let columns: Vec<usize> = lines.iter().map(|l| l.start_col).collect();
         assert_eq!(columns, [0, 3, 6]);
+    }
+
+    /// A space typed at the end of a full line must not open a new row. The caret still
+    /// sits after it, since caret columns are measured against the source rather than
+    /// against the rendered line.
+    #[test]
+    fn a_trailing_space_does_not_add_a_line() {
+        assert_eq!(wrap_lines("abcde ", 5).len(), 1);
+        assert_eq!(wrap("abcde ", 5), ["abcde"]);
+        assert_eq!(wrap("ab ", 5), ["ab"]);
+        assert_eq!(wrap(" ", 5), [""]);
+        assert_eq!(wrap("one two ", 7), ["one two"]);
     }
 
     #[test]
