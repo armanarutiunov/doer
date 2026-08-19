@@ -1,6 +1,7 @@
 use doer_core::layout::{SCROLL_MARGIN, adjust_scroll, clamp_scroll};
 use doer_core::text::{self, TextInput};
 use proptest::prelude::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 proptest! {
     #[test]
@@ -40,10 +41,23 @@ proptest! {
         prop_assert_eq!(once, clamp_scroll(once, rows, viewport));
     }
 
+    /// A grapheme cannot be split, so one that is wider than the line on its own is the
+    /// only thing allowed to overflow — a two-column emoji has nowhere to go in a
+    /// one-column line.
     #[test]
-    fn wrapped_lines_never_exceed_the_width(text in ".{0,200}", width in 2usize..40) {
+    fn a_wrapped_line_only_exceeds_the_width_when_one_grapheme_does(
+        text in ".{0,200}",
+        width in 2usize..40,
+    ) {
         for line in text::wrap(&text, width) {
-            prop_assert!(text::width(&line) <= width, "line {:?} exceeds {}", line, width);
+            if text::width(&line) <= width {
+                continue;
+            }
+            let graphemes = line.graphemes(true).count();
+            prop_assert_eq!(
+                graphemes, 1,
+                "line {:?} exceeds {} with {} graphemes", line, width, graphemes
+            );
         }
     }
 
