@@ -7,49 +7,90 @@ pub fn width(text: &str) -> usize {
     UnicodeWidthStr::width(text)
 }
 
+/// One wrapped line: the text, and the display column it starts at within the source.
+///
+/// The start column is what lets a caret be placed exactly. Wrapping drops the space at
+/// each break, so summing the widths of the lines drifts one column per break -- which is
+/// visible as a caret sitting to the right of the character it is on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WrappedLine {
+    pub text: String,
+    pub start_col: usize,
+}
+
 /// Greedy word wrap measured in display columns. A word longer than the line is
 /// hard-broken on grapheme boundaries, and a double-width grapheme that would
 /// straddle the edge moves to the next line rather than being split.
 #[must_use]
 pub fn wrap(text: &str, max_width: usize) -> Vec<String> {
+    wrap_lines(text, max_width)
+        .into_iter()
+        .map(|line| line.text)
+        .collect()
+}
+
+#[must_use]
+pub fn wrap_lines(text: &str, max_width: usize) -> Vec<WrappedLine> {
     if text.is_empty() || max_width == 0 {
-        return vec![String::new()];
+        return vec![WrappedLine {
+            text: String::new(),
+            start_col: 0,
+        }];
     }
 
-    let mut lines = Vec::new();
+    let mut lines: Vec<WrappedLine> = Vec::new();
     let mut current = String::new();
     let mut current_width = 0;
+    // Where the line being built starts, and where the source has been consumed to.
+    let mut current_start = 0;
+    let mut source_col = 0;
 
-    for word in text.split(' ') {
+    let mut push = |current: &mut String, start: usize| {
+        lines.push(WrappedLine {
+            text: std::mem::take(current),
+            start_col: start,
+        });
+    };
+
+    for (index, word) in text.split(' ').enumerate() {
         let word_width = width(word);
+        // Every split consumed one space from the source except before the first word.
+        if index > 0 {
+            source_col += 1;
+        }
         let space = usize::from(!current.is_empty());
 
         if !current.is_empty() && current_width + space + word_width <= max_width {
             current.push(' ');
             current.push_str(word);
             current_width += space + word_width;
+            source_col += word_width;
             continue;
         }
 
         if word_width <= max_width {
             if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
+                push(&mut current, current_start);
             }
             current = word.to_string();
             current_width = word_width;
+            current_start = source_col;
+            source_col += word_width;
             continue;
         }
 
         for chunk in hard_break(word, max_width) {
             if !current.is_empty() {
-                lines.push(std::mem::take(&mut current));
+                push(&mut current, current_start);
             }
             current_width = width(&chunk);
+            current_start = source_col;
+            source_col += current_width;
             current = chunk;
         }
     }
 
-    lines.push(current);
+    push(&mut current, current_start);
     lines
 }
 
@@ -329,6 +370,50 @@ mod tests {
         let original: String = text.chars().filter(|c| *c != ' ').collect();
         let produced: String = joined.chars().filter(|c| *c != ' ').collect();
         assert_eq!(produced, original);
+    }
+
+    #[test]
+    fn a_wrapped_lines_start_column_accounts_for_the_spaces_wrapping_dropped() {
+        let text = "aaa bbb ccc ddd";
+        let lines = wrap_lines(text, 7);
+        assert_eq!(
+            lines,
+            [
+                WrappedLine {
+                    text: "aaa bbb".into(),
+                    start_col: 0
+                },
+                WrappedLine {
+                    text: "ccc ddd".into(),
+                    start_col: 8
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn every_start_column_matches_the_position_of_the_line_in_the_source() {
+        let text = "one two three four five six seven eight";
+        for width_limit in 3..20 {
+            for line in wrap_lines(text, width_limit) {
+                if line.text.is_empty() {
+                    continue;
+                }
+                let at = width(&text[..line.start_col.min(text.len())]);
+                assert_eq!(
+                    at, line.start_col,
+                    "line {:?} claims column {} at width {width_limit}",
+                    line.text, line.start_col
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_hard_broken_word_has_no_gap_between_its_lines() {
+        let lines = wrap_lines("abcdefgh", 3);
+        let columns: Vec<usize> = lines.iter().map(|l| l.start_col).collect();
+        assert_eq!(columns, [0, 3, 6]);
     }
 
     #[test]

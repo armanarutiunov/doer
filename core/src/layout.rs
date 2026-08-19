@@ -392,26 +392,24 @@ impl Builder {
 
         let editing = hints.editing.as_ref().filter(|(id, _, _)| *id == todo.id);
         let source = editing.map_or(todo.text.as_str(), |(_, text, _)| *text);
-        let lines = text::wrap(source, text_width);
+        let lines = text::wrap_lines(source, text_width);
         let caret = editing.map(|(_, _, col)| *col);
 
         let start = self.rows.len();
         let line_count = lines.len();
-        let mut consumed = 0;
         for (line_index, line) in lines.into_iter().enumerate() {
-            let line_width = text::width(&line);
+            let line_end = line.start_col + text::width(&line.text);
             let caret_col = caret.and_then(|col| {
-                let end = consumed + line_width;
                 let last_line = line_index + 1 == line_count;
-                // A caret sitting exactly at a wrap point belongs to the line it
-                // was typed on, so it does not jump ahead of the character.
-                if (col >= consumed && col < end) || (last_line && col >= end) {
-                    Some(text::to_u16(col.saturating_sub(consumed)))
+                // A caret sitting exactly at a wrap point belongs to the line it was
+                // typed on, so it does not jump ahead of the character.
+                if (col >= line.start_col && col < line_end) || (last_line && col >= line_end) {
+                    Some(text::to_u16(col.saturating_sub(line.start_col)))
                 } else {
                     None
                 }
             });
-            consumed += line_width;
+            let line = line.text;
 
             self.push(Row::Todo(TodoRow {
                 id: todo.id.clone(),
