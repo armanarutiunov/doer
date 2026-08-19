@@ -1,0 +1,34 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+  All Todos                        │                                                                |
+                                   │                 Todos                      Created             |
+  Projects                         │                                                                |
+                                   │               ◯ buy milk                        1d             |
+  # Work                           │               ◯ call the plumber                5d             |
+    # Deep                         │                                                                |
+                                   │                                                                |
+                                   │                 # Work                     Created             |
+                                   │                                                                |
+                                   │               ◯ a deliberately long todo       12d             |
+                                   │                 that has to wrap across                        |
+                                   │                 more than one line to                          |
+                                   │                 prove the scroll model                         |
+                                   │                 counts them                                    |
+                                   │                                                                |
+                                   │                                                                |
+                                   │                 # Work / Deep              Created             |
+                                   │                                                                |
+                                   │               ◯ nested project todo             3d             |
+                                   │                                                                |
+                                   │                                                                |
+                                   │                 Completed       Created  Completed             |
+                                   │                                                                |
+                                   │               ◉ ship the port       30d         2d             |
+                                   │                                                                |
+                                   │                                                                |
+                                   │                                                                |
+                                   │                                                                |
+                                   │              NORMAL           1/5 completed          ? for help|
+                                   │                                                                |

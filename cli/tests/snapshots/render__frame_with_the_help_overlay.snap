@@ -1,0 +1,34 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+  All Todos                                                                                         |
+                   Normal                          Editing                          ted             |
+  Projects                                                                                          |
+                   j k ↓ ↑    navigate             enter      confirm                1d             |
+  # Work           g gg G     start / end          esc        cancel                 5d             |
+    # Deep         ctrl+d/u   half page down/up    ← →        move caret                            |
+                   a          add todo             home end   start/end of line                     |
+                   e i        edit todo            ctrl+w     delete word back      ted             |
+                   d          delete todo          ctrl+u     delete to start                       |
+                   space      toggle done                                           12d             |
+                   J K        reorder todo         Search                                           |
+                   v          visual mode                                                           |
+                   /          search               type       filter todos                          |
+                   u ctrl+r   undo / redo          enter      browse matches                        |
+                   h ←        focus sidebar        j k        next/previous match                   |
+                                                   esc        cancel search                         |
+                   Visual                                                           ted             |
+                                                   Sidebar                                          |
+                   j k ↓ ↑    extend selection                                       3d             |
+                   J K        reorder selected     j k ↓ ↑    navigate                              |
+                   d          delete selected      enter l →  select project                        |
+                   space      toggle selected      a          add project           ted             |
+                   esc        exit visual          s          add subproject                        |
+                                                   e i        rename project         2d             |
+                   Global                          d          delete project                        |
+                                                   J K        reorder projects                      |
+                   \          toggle sidebar                                                        |
+                   tab        switch focus                                                          |
+                   ?          help                                                  d               |
+                   q          quit                                                                  |

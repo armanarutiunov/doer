@@ -1,0 +1,24 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+  All Todos                        │                    |
+                                   │    Todos    Created|
+  Projects                         │                    |
+                                   │  ◯ buy milk        |
+  # Work                           │  ◯ call the        |
+    # Deep                         │    plumber         |
+                                   │                    |
+                                   │                    |
+                                   │    # Work   Created|
+                                   │                    |
+                                   │  ◯ a               |
+                                   │    deliberate      |
+                                   │    ly long         |
+                                   │    todo that       |
+                                   │    has to          |
+                                   │                    |
+                                   │                    |
+                                   │                    |
+                                   │ NORMAL 1/5 complete|
+                                   │                    |

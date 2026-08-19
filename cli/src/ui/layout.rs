@@ -3,8 +3,8 @@
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
-pub(crate) const SIDEBAR_WIDTH: u16 = 35;
-pub(crate) const BORDER_WIDTH: u16 = 1;
+pub const SIDEBAR_WIDTH: u16 = 35;
+pub const BORDER_WIDTH: u16 = 1;
 const CONTENT_PERCENT: u32 = 60;
 const CONTENT_MIN_WIDTH: u16 = 20;
 const PAD_TOP: u16 = 1;
@@ -12,23 +12,23 @@ const PAD_TOP: u16 = 1;
 const BOTTOM_RESERVED: u16 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct Frames {
-    pub(crate) sidebar: Option<Rect>,
-    pub(crate) border: Option<Rect>,
+pub struct Frames {
+    pub sidebar: Option<Rect>,
+    pub border: Option<Rect>,
     /// The scrolling list viewport. Its height is the `vh` the scroll maths needs.
-    pub(crate) content: Rect,
-    pub(crate) search: Rect,
-    pub(crate) modebar: Rect,
+    pub content: Rect,
+    pub search: Rect,
+    pub modebar: Rect,
     /// False when the sidebar was hidden because it would not fit, so the caller can
     /// keep its own `sidebar_open` flag untouched and restore it on a widening.
-    pub(crate) sidebar_fits: bool,
+    pub sidebar_fits: bool,
 }
 
 /// Smallest width that still leaves the content column its minimum beside a sidebar.
 const SIDEBAR_MIN_TOTAL: u16 = SIDEBAR_WIDTH + BORDER_WIDTH + CONTENT_MIN_WIDTH;
 
 #[must_use]
-pub(crate) fn frames(area: Rect, sidebar_open: bool) -> Frames {
+pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
     let sidebar_fits = area.width >= SIDEBAR_MIN_TOTAL;
     let (sidebar, border, body) = if sidebar_open && sidebar_fits {
         let [sidebar, border, body] = Layout::horizontal([
@@ -43,6 +43,14 @@ pub(crate) fn frames(area: Rect, sidebar_open: bool) -> Frames {
     };
 
     let column = centred_column(body);
+    // Rows start at the content column but may run past its right edge, as they did
+    // in the Elixir build: an over-long section header or mode bar overflows into the
+    // padding rather than being clipped. Row content is padded to the content width,
+    // so nothing else reaches into it.
+    let body_rows = Rect {
+        width: body.right().saturating_sub(column.x),
+        ..column
+    };
     let [_, content, _, search, _, modebar, _] = Layout::vertical([
         Constraint::Length(PAD_TOP),
         Constraint::Min(1),
@@ -52,7 +60,7 @@ pub(crate) fn frames(area: Rect, sidebar_open: bool) -> Frames {
         Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .areas(column);
+    .areas(body_rows);
 
     Frames {
         sidebar,
@@ -80,7 +88,7 @@ fn centred_column(body: Rect) -> Rect {
 /// Integer form of the original `trunc(available * 0.6)`; the two agree for every width
 /// a terminal can have.
 #[must_use]
-pub(crate) fn content_width(available: u16) -> u16 {
+pub fn content_width(available: u16) -> u16 {
     let scaled = u16::try_from(u32::from(available) * CONTENT_PERCENT / 100).unwrap_or(u16::MAX);
     scaled.max(CONTENT_MIN_WIDTH).min(available)
 }
@@ -93,12 +101,16 @@ mod tests {
         Rect::new(0, 0, width, height)
     }
 
+    fn content_left_pad(available: u16) -> u16 {
+        (available - content_width(available)) / 2
+    }
+
     #[test]
     fn the_odd_remainder_column_stays_on_the_right() {
         // 81 wide: content 48, so 33 spare — 16 left, 17 right, as the Elixir div/2 did.
         let f = frames(screen(81, 24), false);
         assert_eq!(f.content.x, 16);
-        assert_eq!(f.content.width, 48);
+        assert_eq!(content_width(81), 48);
     }
 
     #[test]
@@ -115,7 +127,9 @@ mod tests {
         let f = frames(screen(100, 24), true);
         assert_eq!(f.sidebar.map(|r| r.width), Some(35));
         assert_eq!(f.border.map(|r| (r.x, r.width)), Some((35, 1)));
-        assert_eq!(f.content.width, content_width(100 - 36));
+        // Rows may overflow the content column, so the frame runs to the right edge.
+        assert_eq!(f.content.x, 36 + content_left_pad(100 - 36));
+        assert_eq!(f.content.width, 100 - f.content.x);
     }
 
     #[test]
@@ -133,7 +147,7 @@ mod tests {
     fn a_tiny_screen_still_yields_a_usable_content_row() {
         let f = frames(screen(40, 10), true);
         assert!(f.sidebar.is_none());
-        assert_eq!(f.content.width, 24);
+        assert_eq!(content_width(40), 24);
         assert_eq!(f.content.height, 4);
     }
 

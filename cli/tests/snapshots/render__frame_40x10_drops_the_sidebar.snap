@@ -1,0 +1,14 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+                                        |
+            Todos        Created        |
+                                        |
+          ◯ buy milk          1d        |
+          ◯ call the          5d        |
+                                        |
+                                        |
+                                        |
+         NORMAL 1/5 completed ? for help|
+                                        |

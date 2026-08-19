@@ -9,7 +9,7 @@ use std::env;
 use ratatui::style::{Color, Modifier, Style};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ColorDepth {
+pub enum ColorDepth {
     TrueColor,
     Ansi16,
 }
@@ -18,7 +18,8 @@ impl ColorDepth {
     /// crossterm writes `Color::Rgb` as a literal `38;2;r;g;b` with no capability check
     /// and no downsampling, so a 16-colour terminal has to be detected here or the
     /// palette lands wrong.
-    pub(crate) fn detect() -> Self {
+    #[must_use]
+    pub fn detect() -> Self {
         match env::var("DOER_COLOR").as_deref() {
             Ok("16") => return Self::Ansi16,
             Ok("truecolor" | "24bit") => return Self::TrueColor,
@@ -35,41 +36,45 @@ impl ColorDepth {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct Theme {
-    pub(crate) text: Style,
+pub struct Theme {
+    pub text: Style,
     /// Section headers, date columns, counters, hints.
-    pub(crate) dim: Style,
+    pub dim: Style,
     /// The right-hand "Xd" columns, one notch brighter than `dim`.
-    pub(crate) meta: Style,
-    pub(crate) cursor_row: Style,
-    pub(crate) cursor_row_unfocused: Style,
-    pub(crate) cursor_text: Style,
-    pub(crate) done_text: Style,
-    pub(crate) editing: Style,
+    pub meta: Style,
+    pub cursor_row: Style,
+    pub cursor_row_unfocused: Style,
+    pub cursor_text: Style,
+    pub done_text: Style,
+    pub editing: Style,
     /// The `▎` bar marking a visual-mode selection.
-    pub(crate) selection_bar: Style,
-    pub(crate) sidebar_item: Style,
-    pub(crate) sidebar_current: Style,
-    pub(crate) sidebar_hint: Style,
-    pub(crate) confirm_delete: Style,
-    pub(crate) border_focused: Style,
-    pub(crate) border_idle: Style,
-    pub(crate) help_surface: Style,
-    pub(crate) help_text: Style,
-    pub(crate) help_heading: Style,
-    pub(crate) search: Style,
-    pub(crate) mode_normal: Style,
-    pub(crate) mode_visual: Style,
-    pub(crate) mode_insert: Style,
-    pub(crate) mode_search: Style,
+    pub selection_bar: Style,
+    pub sidebar_item: Style,
+    pub sidebar_current: Style,
+    pub sidebar_hint: Style,
+    pub confirm_delete: Style,
+    pub border_focused: Style,
+    pub border_idle: Style,
+    pub help_surface: Style,
+    pub help_text: Style,
+    pub help_heading: Style,
+    pub search: Style,
+    pub toast_info: Style,
+    pub toast_warning: Style,
+    pub toast_error: Style,
+    pub mode_normal: Style,
+    pub mode_visual: Style,
+    pub mode_insert: Style,
+    pub mode_search: Style,
     /// True when `cursor_row` highlights by inverting rather than by filling. Reverse
     /// video does not nest — a reversed span inside a reversed row cancels back to
     /// normal — so the renderer must not invert anything else on the cursor row.
-    pub(crate) cursor_row_inverts: bool,
+    pub cursor_row_inverts: bool,
 }
 
 impl Theme {
-    pub(crate) fn for_depth(depth: ColorDepth) -> Self {
+    #[must_use]
+    pub fn for_depth(depth: ColorDepth) -> Self {
         match depth {
             ColorDepth::TrueColor => Self::purple(),
             ColorDepth::Ansi16 => Self::ansi(),
@@ -77,7 +82,8 @@ impl Theme {
     }
 
     /// The palette the Elixir build shipped, to the exact channel value.
-    pub(crate) fn purple() -> Self {
+    #[must_use]
+    pub fn purple() -> Self {
         let dim_grey = Color::Rgb(100, 100, 100);
         Self {
             text: Style::new(),
@@ -101,6 +107,9 @@ impl Theme {
             help_text: Style::new().fg(Color::White).bg(Color::Rgb(65, 65, 72)),
             help_heading: Style::new().fg(dim_grey).bg(Color::Rgb(65, 65, 72)),
             search: Style::new().fg(Color::White),
+            toast_info: Style::new().fg(Color::Rgb(140, 140, 140)),
+            toast_warning: Style::new().fg(Color::Yellow),
+            toast_error: Style::new().fg(Color::Red),
             mode_normal: mode(Color::Blue),
             mode_visual: mode(Color::Magenta),
             mode_insert: mode(Color::Green),
@@ -111,7 +120,8 @@ impl Theme {
 
     /// Degraded palette: the terminal's own 16 colours, so it stays legible on a light
     /// background where the purple fills would not be.
-    pub(crate) fn ansi() -> Self {
+    #[must_use]
+    pub fn ansi() -> Self {
         Self {
             text: Style::new(),
             dim: Style::new().fg(Color::DarkGray),
@@ -134,6 +144,9 @@ impl Theme {
             help_text: Style::new().add_modifier(Modifier::REVERSED),
             help_heading: Style::new().add_modifier(Modifier::REVERSED | Modifier::DIM),
             search: Style::new(),
+            toast_info: Style::new().fg(Color::DarkGray),
+            toast_warning: Style::new().fg(Color::Yellow),
+            toast_error: Style::new().fg(Color::Red),
             mode_normal: mode(Color::Blue),
             mode_visual: mode(Color::Magenta),
             mode_insert: mode(Color::Green),

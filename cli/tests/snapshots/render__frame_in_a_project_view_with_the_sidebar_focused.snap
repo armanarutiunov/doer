@@ -1,0 +1,28 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+  All Todos                        │                                            |
+                                   │             # Work todos   Created         |
+  Projects                         │                                            |
+                                   │           ◯ a                  12d         |
+  # Work                           │             deliberately                   |
+    # Deep                         │             long todo                      |
+                                   │             that has to                    |
+                                   │             wrap across                    |
+                                   │             more than one                  |
+                                   │             line to prove                  |
+                                   │             the scroll                     |
+                                   │             model counts                   |
+                                   │             them                           |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │          NORMAL   0/1 completed  ? for help|
+                                   │                                            |
