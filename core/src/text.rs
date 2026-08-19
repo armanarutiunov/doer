@@ -392,20 +392,26 @@ mod tests {
     }
 
     #[test]
+    /// Rebuilds the source from the wrapped lines and checks each one begins where it
+    /// claims to. A soft break consumed exactly one space, a hard break consumed none.
     fn every_start_column_matches_the_position_of_the_line_in_the_source() {
         let text = "one two three four five six seven eight";
         for width_limit in 3..20 {
+            let mut rebuilt = String::new();
             for line in wrap_lines(text, width_limit) {
-                if line.text.is_empty() {
-                    continue;
+                if !rebuilt.is_empty() && width(&rebuilt) < line.start_col {
+                    rebuilt.push(' ');
                 }
-                let at = width(&text[..line.start_col.min(text.len())]);
                 assert_eq!(
-                    at, line.start_col,
+                    width(&rebuilt),
+                    line.start_col,
                     "line {:?} claims column {} at width {width_limit}",
-                    line.text, line.start_col
+                    line.text,
+                    line.start_col
                 );
+                rebuilt.push_str(&line.text);
             }
+            assert_eq!(rebuilt, text, "at width {width_limit}");
         }
     }
 
