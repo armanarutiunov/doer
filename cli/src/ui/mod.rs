@@ -87,7 +87,7 @@ impl<'a> Screen<'a> {
             show_help: app.help,
         };
 
-        let sidebar = app.sidebar_open.then(|| SidebarView {
+        let sidebar = app.sidebar_open().then(|| SidebarView {
             projects: app.ws.projects(),
             cursor: match &app.sidebar_cursor {
                 SidebarCursor::All => None,

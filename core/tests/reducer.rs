@@ -938,3 +938,151 @@ fn the_mode_bar_counts_the_view_and_ignores_the_search_filter() {
     send(&mut state, &A::Sidebar(SidebarAction::Down));
     assert_eq!(state.counts(), (0, 1), "counts follow the current view");
 }
+
+// --- undo must not leave orphaned files ---
+
+fn deletes(effects: &[Effect]) -> Vec<doer_core::ProjectId> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::DeleteProject(id) => Some(id.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn undoing_a_project_creation_deletes_the_file_it_wrote() {
+    let mut state = app(&[]);
+    state.pane = Pane::Sidebar;
+    send(&mut state, &A::Sidebar(SidebarAction::AddProject));
+    type_sidebar(&mut state, "Errands");
+    let created = send(&mut state, &A::Sidebar(SidebarAction::ConfirmEdit));
+    let id = state.ws.projects().as_slice()[0].id.clone();
+    assert_eq!(saves(&created), [Target::Project(id.clone())]);
+
+    let undone = send(&mut state, &A::Undo);
+
+    assert_eq!(state.ws.projects().len(), 0);
+    assert!(
+        !saves(&undone).contains(&Target::Project(id.clone())),
+        "a project that no longer exists must not also be queued for writing"
+    );
+    assert_eq!(
+        deletes(&undone),
+        [id],
+        "otherwise the project reappears on the next launch"
+    );
+}
+
+#[test]
+fn redoing_a_project_delete_deletes_the_file_again() {
+    let (mut state, project) = app_with_project(&[], &["work"]);
+    state.pane = Pane::Sidebar;
+    state.sidebar_cursor = SidebarCursor::Project(project.clone());
+    send(&mut state, &A::Sidebar(SidebarAction::Delete));
+    send(&mut state, &A::Sidebar(SidebarAction::ConfirmDelete));
+    send(&mut state, &A::Undo);
+
+    let redone = send(&mut state, &A::Redo);
+
+    assert_eq!(state.ws.projects().len(), 0);
+    assert_eq!(deletes(&redone), [project]);
+}
+
+#[test]
+fn undoing_a_project_delete_still_rewrites_the_file_and_deletes_nothing() {
+    let (mut state, project) = app_with_project(&[], &["important"]);
+    state.pane = Pane::Sidebar;
+    state.sidebar_cursor = SidebarCursor::Project(project.clone());
+    send(&mut state, &A::Sidebar(SidebarAction::Delete));
+    send(&mut state, &A::Sidebar(SidebarAction::ConfirmDelete));
+
+    let undone = send(&mut state, &A::Undo);
+
+    assert!(saves(&undone).contains(&Target::Project(project)));
+    assert!(deletes(&undone).is_empty());
+}
+
+#[test]
+fn a_project_that_survives_an_undo_is_not_deleted() {
+    let (mut state, kept) = app_with_project(&["loose"], &[]);
+    send(&mut state, &A::DeleteTodo);
+
+    let undone = send(&mut state, &A::Undo);
+
+    assert!(deletes(&undone).is_empty(), "only the todo changed");
+    assert!(saves(&undone).contains(&Target::Project(kept)));
+}
+
+// --- a refused reorder must change nothing at all ---
+
+#[test]
+fn a_sidebar_reorder_at_the_end_of_a_level_leaves_the_redo_branch_alone() {
+    let mut ws = Workspace::default();
+    ws.add_project("Only".into(), None);
+    let mut state = AppState::new(ws, geometry());
+    let id = state.ws.projects().as_slice()[0].id.clone();
+
+    send(&mut state, &A::AddTodo);
+    type_text(&mut state, "a todo");
+    send(&mut state, &A::ConfirmEdit);
+    send(&mut state, &A::Undo);
+    assert!(state.undo.can_redo());
+
+    state.pane = Pane::Sidebar;
+    state.sidebar_cursor = SidebarCursor::Project(id);
+    let refused = send(&mut state, &A::Sidebar(SidebarAction::Move(Dir::Down)));
+
+    assert!(
+        saves(&refused).is_empty(),
+        "nothing moved, so nothing to save"
+    );
+    assert!(
+        state.undo.can_redo(),
+        "a keypress that did nothing must not discard the redo branch"
+    );
+    send(&mut state, &A::Redo);
+    assert_eq!(visible(&state), ["a todo"]);
+}
+
+#[test]
+fn a_refused_todo_reorder_also_leaves_the_redo_branch_alone() {
+    let mut state = app(&["a", "b"]);
+    send(&mut state, &A::DeleteTodo);
+    send(&mut state, &A::Undo);
+    assert!(state.undo.can_redo());
+
+    send(&mut state, &A::Move(Dir::Up));
+
+    assert!(state.undo.can_redo());
+}
+
+#[test]
+fn reordering_projects_still_works_when_there_is_a_sibling() {
+    let mut ws = Workspace::default();
+    ws.add_project("First".into(), None);
+    ws.add_project("Second".into(), None);
+    let mut state = AppState::new(ws, geometry());
+    let first = state.ws.projects().flat_ordered()[0].id.clone();
+    state.pane = Pane::Sidebar;
+    state.sidebar_cursor = SidebarCursor::Project(first.clone());
+
+    let effects = send(&mut state, &A::Sidebar(SidebarAction::Move(Dir::Down)));
+
+    assert!(!saves(&effects).is_empty());
+    assert_eq!(state.ws.projects().flat_ordered()[1].id, first);
+}
+
+#[test]
+fn toggling_the_sidebar_keeps_the_layout_and_the_keymap_agreeing() {
+    let mut state = app(&["a"]);
+    assert!(state.sidebar_open());
+    assert!(state.geo.sidebar_open);
+
+    send(&mut state, &A::ToggleSidebar);
+
+    assert!(!state.sidebar_open());
+    assert!(!state.geo.sidebar_open);
+    assert!(!state.input_context().sidebar_open);
+}

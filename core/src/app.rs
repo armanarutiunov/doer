@@ -6,7 +6,7 @@
 //! application by feeding it actions and reading state back.
 
 use crate::action::{Action, Dir, EditKey, Motion, ResolveCursor, SidebarAction};
-use crate::dirty::{DirtySet, target_of};
+use crate::dirty::{DirtySet, Touched, target_of};
 use crate::display::{DisplayList, ViewId};
 use crate::id::{ProjectId, TodoId};
 use crate::layout::{Geometry, Layout, LayoutHints, adjust_scroll, clamp_scroll};
@@ -150,7 +150,6 @@ pub struct AppState {
     views: Vec<(ViewId, ViewState)>,
 
     pub pane: Pane,
-    pub sidebar_open: bool,
     pub main: MainState,
     pub sidebar: SidebarState,
     pub sidebar_cursor: SidebarCursor,
@@ -182,7 +181,6 @@ impl AppState {
             view: ViewId::All,
             views: Vec::new(),
             pane: Pane::Main,
-            sidebar_open: true,
             main: MainState::Normal,
             sidebar: SidebarState::Normal,
             sidebar_cursor: SidebarCursor::All,
@@ -239,6 +237,13 @@ impl AppState {
         }
     }
 
+    /// Kept on `geo` alone, because that is what the layout reads; a second copy on
+    /// `AppState` would be one more thing to hold in step by hand.
+    #[must_use]
+    pub fn sidebar_open(&self) -> bool {
+        self.geo.sidebar_open
+    }
+
     #[must_use]
     pub fn focus(&self) -> Focus {
         match self.pane {
@@ -251,7 +256,7 @@ impl AppState {
     pub fn input_context(&self) -> crate::input::InputContext {
         crate::input::InputContext {
             focus: self.focus(),
-            sidebar_open: self.sidebar_open,
+            sidebar_open: self.sidebar_open(),
             help: self.help,
         }
     }
@@ -346,25 +351,21 @@ impl AppState {
     }
 
     /// The single place the workspace may be mutated. Snapshot, apply, check, record.
-    fn mutate<R>(
-        &mut self,
-        targets: impl IntoIterator<Item = Target>,
-        change: impl FnOnce(&mut Workspace) -> R,
-    ) -> R {
+    fn mutate<R>(&mut self, change: impl FnOnce(&mut Workspace) -> (R, Touched)) -> R {
         if self.session.is_none() {
             self.undo.push(self.snapshot());
         }
-        let result = change(&mut self.ws);
+        let (result, touched) = change(&mut self.ws);
         debug_assert!(self.ws.is_valid(), "a mutation left the workspace invalid");
 
-        for target in targets {
-            if let Some(session) = self.session.as_mut()
-                && !session.contains(&target)
-            {
-                session.push(target.clone());
+        if let Some(session) = self.session.as_mut() {
+            for target in &touched.saves {
+                if !session.contains(target) {
+                    session.push(target.clone());
+                }
             }
-            self.dirty.mark(target);
         }
+        self.dirty.absorb(touched);
         result
     }
 
@@ -379,14 +380,22 @@ impl AppState {
     }
 
     fn restore(&mut self, snapshot: Snapshot) {
-        // Which files changed is not worth diffing: mark everything either version
-        // knows about, and let the writer coalesce.
-        for bucket in snapshot.ws.buckets_in_display_order() {
-            self.dirty.mark_bucket(&bucket);
-        }
-        for bucket in self.ws.buckets_in_display_order() {
-            self.dirty.mark_bucket(&bucket);
-        }
+        let mut touched = Touched::saving_all(
+            snapshot
+                .ws
+                .buckets_in_display_order()
+                .iter()
+                .map(target_of)
+                .collect(),
+        );
+        // A project that exists now but not in the snapshot has to lose its file too,
+        // or undoing a create leaves it on disk to reappear on the next launch.
+        let kept = project_ids(&snapshot.ws);
+        touched.deletes = project_ids(&self.ws)
+            .into_iter()
+            .filter(|id| !kept.contains(id))
+            .collect();
+        self.dirty.absorb(touched);
 
         self.ws = snapshot.ws;
         self.view = snapshot.view;
@@ -656,9 +665,8 @@ fn chrome(state: &mut AppState, action: &Action) -> Option<Vec<Effect>> {
         Action::DayChanged => {}
 
         Action::ToggleSidebar => {
-            state.sidebar_open = !state.sidebar_open;
-            state.geo.sidebar_open = state.sidebar_open;
-            state.pane = if state.sidebar_open {
+            state.geo.sidebar_open = !state.geo.sidebar_open;
+            state.pane = if state.sidebar_open() {
                 Pane::Sidebar
             } else {
                 state.sidebar = SidebarState::Normal;
@@ -751,6 +759,51 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
     effects
 }
 
+fn project_ids(ws: &Workspace) -> Vec<ProjectId> {
+    ws.projects()
+        .as_slice()
+        .iter()
+        .map(|p| p.id.clone())
+        .collect()
+}
+
+/// The file a todo's own bucket writes to.
+fn touched_for(ws: &Workspace, id: &TodoId) -> Touched {
+    match ws.find(id) {
+        Some((bucket, _)) => Touched::saving(target_of(&bucket)),
+        None => Touched::nothing(),
+    }
+}
+
+fn touched_for_all(ws: &Workspace, ids: &[TodoId]) -> Touched {
+    let mut touched = Touched::nothing();
+    for id in ids {
+        if let Some((bucket, _)) = ws.find(id) {
+            touched = touched.and_save(target_of(&bucket));
+        }
+    }
+    touched
+}
+
+/// Whether the project has a sibling at its own level to trade places with.
+fn can_reorder_project(state: &AppState, id: &ProjectId, down: bool) -> bool {
+    let Some(project) = state.ws.projects().get(id) else {
+        return false;
+    };
+    let level: Vec<ProjectId> = match &project.parent_id {
+        None => state.ws.projects().top_level(),
+        Some(parent) => state.ws.projects().children(parent),
+    }
+    .iter()
+    .map(|p| p.id.clone())
+    .collect();
+
+    let Some(at) = level.iter().position(|other| other == id) else {
+        return false;
+    };
+    if down { at + 1 < level.len() } else { at > 0 }
+}
+
 fn bucket_of(target: &Target) -> Bucket {
     match target {
         Target::AllTodos => Bucket::All,
@@ -786,7 +839,10 @@ fn add_todo(state: &mut AppState, now: i64) {
 
     state.begin_session();
     let target = target_of(&bucket);
-    state.mutate([target], |ws| ws.insert_todo(&bucket, at, todo));
+    state.mutate(|ws| {
+        ws.insert_todo(&bucket, at, todo);
+        ((), Touched::saving(target))
+    });
 
     state.cursor = Some(id.clone());
     state.main = MainState::Insert(Editing {
@@ -824,15 +880,19 @@ fn confirm_edit(state: &mut AppState) {
         // Confirming an empty new todo discards it, exactly as escaping would.
         EditTarget::New(_) if blank => state.abort_session(),
         EditTarget::New(_) => {
-            let target = state.ws.find(&id).map(|(bucket, _)| target_of(&bucket));
-            state.mutate(target, |ws| ws.set_text(&id, text));
+            state.mutate(|ws| {
+                ws.set_text(&id, text);
+                ((), touched_for(ws, &id))
+            });
             state.end_session();
         }
         // An emptied existing todo reverts rather than vanishing.
         EditTarget::Existing { original, .. } if blank || text == original => {}
         EditTarget::Existing { .. } => {
-            let target = state.ws.find(&id).map(|(bucket, _)| target_of(&bucket));
-            state.mutate(target, |ws| ws.set_text(&id, text));
+            state.mutate(|ws| {
+                ws.set_text(&id, text);
+                ((), touched_for(ws, &id))
+            });
         }
     }
 }
@@ -865,15 +925,13 @@ fn delete(state: &mut AppState) {
     if ids.is_empty() {
         return;
     }
-    let targets: Vec<Target> = ids
-        .iter()
-        .filter_map(|id| state.ws.find(id))
-        .map(|(bucket, _)| target_of(&bucket))
-        .collect();
-    state.mutate(targets, |ws| {
+    state.mutate(|ws| {
+        // Read before the removal: afterwards the todos have no bucket to name.
+        let touched = touched_for_all(ws, &ids);
         for id in &ids {
             ws.remove_todo(id);
         }
+        ((), touched)
     });
     state.main = MainState::Normal;
 }
@@ -883,15 +941,11 @@ fn toggle(state: &mut AppState, now: i64) {
     if ids.is_empty() {
         return;
     }
-    let targets: Vec<Target> = ids
-        .iter()
-        .filter_map(|id| state.ws.find(id))
-        .map(|(bucket, _)| target_of(&bucket))
-        .collect();
-    state.mutate(targets, |ws| {
+    state.mutate(|ws| {
         for id in &ids {
             ws.toggle(id, now);
         }
+        ((), touched_for_all(ws, &ids))
     });
     state.main = MainState::Normal;
 }
@@ -912,20 +966,22 @@ fn move_todos(state: &mut AppState, dir: Dir) -> Vec<Effect> {
         Reorder::Blocked(Blocked::Edge) => Vec::new(),
         Reorder::Move { ref bucket, .. } => {
             let target = target_of(bucket);
-            state.mutate([target], |ws| reorder::apply(ws, &plan));
+            state.mutate(|ws| {
+                reorder::apply(ws, &plan);
+                ((), Touched::saving(target))
+            });
             Vec::new()
         }
         Reorder::Reassign {
             ref to, ref ids, ..
         } => {
-            let mut targets: Vec<Target> = ids
-                .iter()
-                .filter_map(|id| state.ws.find(id))
-                .map(|(bucket, _)| target_of(&bucket))
-                .collect();
-            targets.push(target_of(to));
             let label = section_label(state, to);
-            state.mutate(targets, |ws| reorder::apply(ws, &plan));
+            let destination = target_of(to);
+            state.mutate(|ws| {
+                let touched = touched_for_all(ws, ids).and_save(destination);
+                reorder::apply(ws, &plan);
+                ((), touched)
+            });
             vec![Effect::Toast(state.new_toast(
                 format!("-- moved to {label} --"),
                 ToastLevel::Info,
@@ -1073,19 +1129,24 @@ fn sidebar_project_op(state: &mut AppState, action: SidebarAction) -> Vec<Effect
                 ))];
             };
             let down = dir == Dir::Down;
+            // Decided before mutating: entering `mutate` speculatively would clear the
+            // redo branch even when the project is already at the end of its level.
+            if !can_reorder_project(state, &id, down) {
+                return Vec::new();
+            }
             // Both projects in the swap change index, so both files need writing.
-            let neighbours: Vec<Target> = state
+            let files: Vec<Target> = state
                 .ws
                 .projects()
                 .as_slice()
                 .iter()
                 .map(|p| Target::Project(p.id.clone()))
                 .collect();
-            let moved = state.mutate(neighbours, |ws| ws.reorder_project(&id, down));
-            if !moved {
-                state.dirty = DirtySet::default();
-                state.undo.pop();
-            }
+            state.mutate(|ws| {
+                let moved = ws.reorder_project(&id, down);
+                debug_assert!(moved, "a reorder ruled possible did not happen");
+                ((), Touched::saving_all(files))
+            });
             Vec::new()
         }
         _ => Vec::new(),
@@ -1107,15 +1168,19 @@ fn confirm_sidebar_edit(state: &mut AppState) -> Vec<Effect> {
                 ProjectEdit::NewChild(id) => Some(id.clone()),
                 _ => None,
             };
-            let id = state.mutate([], |ws| ws.add_project(name, parent));
-            state.dirty.mark(Target::Project(id.clone()));
+            let id = state.mutate(|ws| {
+                let id = ws.add_project(name, parent);
+                let touched = Touched::saving(Target::Project(id.clone()));
+                (id, touched)
+            });
             state.sidebar_cursor = SidebarCursor::Project(id);
             let view = state.view_for_sidebar();
             state.switch_view(view);
         }
         ProjectEdit::Rename(id) => {
-            state.mutate([Target::Project(id.clone())], |ws| {
+            state.mutate(|ws| {
                 ws.rename_project(&id, name);
+                ((), Touched::saving(Target::Project(id.clone())))
             });
         }
     }
@@ -1125,10 +1190,10 @@ fn confirm_sidebar_edit(state: &mut AppState) -> Vec<Effect> {
 fn delete_project(state: &mut AppState, id: &ProjectId) -> Vec<Effect> {
     let items = state.sidebar_items();
     let index = state.sidebar_index();
-    let removed = state.mutate([], |ws| ws.delete_project(id));
-    for gone in &removed {
-        state.dirty.mark_deleted(gone.clone());
-    }
+    let removed = state.mutate(|ws| {
+        let removed = ws.delete_project(id);
+        (removed.clone(), Touched::deleting(removed))
+    });
 
     // Land on whatever now occupies the deleted row, which is the entry below it.
     let survivors = state.sidebar_items();

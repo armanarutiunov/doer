@@ -16,6 +16,52 @@ pub fn target_of(bucket: &Bucket) -> Target {
     }
 }
 
+/// What one mutation touched. Returning this from the mutation itself is what keeps
+/// dirty marking honest: a change cannot reach the workspace without saying which
+/// files it implies, and it can name them from the *post*-mutation state.
+#[derive(Clone, Debug, Default)]
+pub struct Touched {
+    pub saves: Vec<Target>,
+    pub deletes: Vec<ProjectId>,
+}
+
+impl Touched {
+    #[must_use]
+    pub fn nothing() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn saving(target: Target) -> Self {
+        Self {
+            saves: vec![target],
+            deletes: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn saving_all(saves: Vec<Target>) -> Self {
+        Self {
+            saves,
+            deletes: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn deleting(deletes: Vec<ProjectId>) -> Self {
+        Self {
+            saves: Vec::new(),
+            deletes,
+        }
+    }
+
+    #[must_use]
+    pub fn and_save(mut self, target: Target) -> Self {
+        self.saves.push(target);
+        self
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct DirtySet {
     saves: Vec<Target>,
@@ -38,6 +84,15 @@ impl DirtySet {
         self.saves.retain(|t| t != &Target::Project(id.clone()));
         if !self.deletes.contains(&id) {
             self.deletes.push(id);
+        }
+    }
+
+    pub fn absorb(&mut self, touched: Touched) {
+        for target in touched.saves {
+            self.mark(target);
+        }
+        for id in touched.deletes {
+            self.mark_deleted(id);
         }
     }
 
