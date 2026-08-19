@@ -196,6 +196,17 @@ impl FsStore {
                 }
                 continue;
             };
+            // Claim the id before reading the entries. A second file claiming it is not
+            // adopted, so nothing of it may be remembered: its unparsed entries and
+            // unknown fields would otherwise be spliced into the file we did keep.
+            if let Some(first) = self.remember_file(&raw.id, &path) {
+                problems.push(Problem::DuplicateProject {
+                    path,
+                    kept: first,
+                    id: raw.id.to_string(),
+                });
+                continue;
+            }
             let (todos, unparsed) = self.split_entries(&path, raw.todos, problems);
             let file = ProjectFile {
                 id: raw.id,
@@ -205,16 +216,6 @@ impl FsStore {
                 todos,
             };
             self.remember_unparsed(Target::Project(file.id.clone()), unparsed);
-            // Two files claiming the same project would otherwise load as two projects
-            // and each save would write only one of them.
-            if let Some(first) = self.remember_file(&file.id, &path) {
-                problems.push(Problem::DuplicateProject {
-                    path,
-                    kept: first,
-                    id: file.id.to_string(),
-                });
-                continue;
-            }
             files.push(file);
         }
         files

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use doer::store::FsStore;
-use doer_core::ProjectId;
 use doer_core::store::{Problem, ProjectFile, Store};
+use doer_core::{ProjectId, Todo};
 
 const DAY: u64 = 24 * 60 * 60;
 
@@ -391,5 +391,50 @@ fn an_unreadable_todo_inside_a_project_does_not_lock_the_project() {
         raw["todos"].as_array().map(Vec::len),
         Some(3),
         "the entry we could not read is still on disk alongside both todos"
+    );
+}
+
+/// The file we do not adopt must contribute nothing. Its unreadable entries would
+/// otherwise be spliced into the array of the file we kept.
+#[test]
+fn a_duplicate_project_file_does_not_pollute_the_one_that_was_kept() {
+    let home = tempfile::tempdir().expect("tempdir");
+    let projects = home.path().join("projects");
+    std::fs::create_dir_all(&projects).expect("create projects");
+
+    let id = "8257339108cf0e12";
+    std::fs::write(
+        projects.join("aaa.json"),
+        format!(
+            "{{\n  \"id\": \"{id}\",\n  \"index\": 0,\n  \"name\": \"kept\",\n  \"parent_id\": null,\n  \"todos\": []\n}}"
+        ),
+    )
+    .expect("write kept");
+    std::fs::write(
+        projects.join("zzz.json"),
+        format!(
+            "{{\n  \"id\": \"{id}\",\n  \"index\": 0,\n  \"name\": \"loser\",\n  \"parent_id\": null,\n  \"todos\": [\n    \"not a todo\"\n  ]\n}}"
+        ),
+    )
+    .expect("write loser");
+
+    let store = FsStore::with_root(home.path());
+    let loaded = store.load();
+    assert_eq!(loaded.value.projects.len(), 1);
+
+    let file = ProjectFile {
+        id: ProjectId::from(id),
+        index: 0,
+        name: "kept".into(),
+        parent_id: None,
+        todos: vec![Todo::new("added later", 1)],
+    };
+    store.save_project(&file).expect("save");
+
+    let written = std::fs::read_to_string(projects.join("aaa.json")).expect("read kept");
+    assert!(written.contains("added later"));
+    assert!(
+        !written.contains("not a todo"),
+        "the discarded file's junk entry leaked into the kept file:\n{written}"
     );
 }
