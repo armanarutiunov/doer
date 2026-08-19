@@ -579,10 +579,7 @@ mod tests {
             .span(&active_id)
             .expect("span")
             .len();
-        let done_lines = layout_of(&done_ws, geo)
-            .span(&done_id)
-            .expect("span")
-            .len();
+        let done_lines = layout_of(&done_ws, geo).span(&done_id).expect("span").len();
         assert!(
             done_lines > active_lines,
             "completed rows carry a second date column so they must wrap sooner: {done_lines} vs {active_lines}"
