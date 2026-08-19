@@ -1086,3 +1086,134 @@ fn toggling_the_sidebar_keeps_the_layout_and_the_keymap_agreeing() {
     assert!(!state.geo.sidebar_open);
     assert!(!state.input_context().sidebar_open);
 }
+
+// --- a file we could not read is never written, and never silently ---
+
+fn warnings(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Toast(toast) if toast.level == ToastLevel::Warning => Some(toast.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn editing_a_locked_bucket_is_refused_and_says_so() {
+    let mut state = app(&["keep me"]);
+    state.ws.mark_read_only(Bucket::All);
+
+    let effects = send(&mut state, &A::ToggleTodo);
+
+    assert_eq!(
+        warnings(&effects),
+        ["-- ungrouped todos couldn't be loaded; they're locked --"]
+    );
+    assert!(saves(&effects).is_empty());
+    assert!(
+        !state.ws.todos(&Bucket::All)[0].done,
+        "the refusal must leave the todo exactly as it was"
+    );
+}
+
+#[test]
+fn a_refused_edit_leaves_nothing_on_the_undo_stack() {
+    let mut state = app(&["keep me"]);
+    state.ws.mark_read_only(Bucket::All);
+    let depth = state.undo.depth();
+
+    send(&mut state, &A::ToggleTodo);
+    send(&mut state, &A::DeleteTodo);
+
+    assert_eq!(state.undo.depth(), depth, "a refusal is not a change");
+    assert_eq!(visible(&state), ["keep me"]);
+}
+
+#[test]
+fn adding_a_todo_to_a_locked_bucket_is_refused_without_leaving_a_stub_behind() {
+    let mut state = app(&["existing"]);
+    state.ws.mark_read_only(Bucket::All);
+
+    let effects = send(&mut state, &A::AddTodo);
+
+    assert_eq!(warnings(&effects).len(), 1);
+    assert_eq!(
+        state.main.mode(),
+        MainMode::Normal,
+        "insert mode not entered"
+    );
+    assert_eq!(visible(&state), ["existing"]);
+    assert_eq!(state.undo.depth(), 0);
+}
+
+#[test]
+fn reordering_a_todo_into_a_locked_project_is_refused() {
+    let (mut state, project) = app_with_project(&["loose"], &["owned"]);
+    state.ws.mark_read_only(Bucket::Project(project.clone()));
+
+    let effects = send(&mut state, &A::Move(Dir::Down));
+
+    assert_eq!(warnings(&effects).len(), 1);
+    assert_eq!(
+        state.ws.todos(&Bucket::All).len(),
+        1,
+        "the todo stayed where it was"
+    );
+    assert_eq!(state.ws.todos(&Bucket::Project(project)).len(), 1);
+}
+
+#[test]
+fn an_unrelated_edit_still_works_while_another_bucket_is_locked() {
+    let (mut state, project) = app_with_project(&["loose"], &["owned"]);
+    state.ws.mark_read_only(Bucket::All);
+    state.view = ViewId::Project(project.clone());
+    state.cursor = Some(
+        state.ws.todos(&Bucket::Project(project.clone()))[0]
+            .id
+            .clone(),
+    );
+
+    let effects = send(&mut state, &A::ToggleTodo);
+
+    assert!(warnings(&effects).is_empty());
+    assert_eq!(saves(&effects), [Target::Project(project.clone())]);
+    assert!(state.ws.todos(&Bucket::Project(project))[0].done);
+}
+
+#[test]
+fn undo_is_refused_only_when_it_would_rewrite_the_locked_bucket() {
+    let mut state = app(&["a", "b"]);
+    send(&mut state, &A::DeleteTodo);
+    assert_eq!(visible(&state), ["b"]);
+
+    // Locked after the change, so the undo stack holds an entry that would rewrite it.
+    state.ws.mark_read_only(Bucket::All);
+    let effects = send(&mut state, &A::Undo);
+
+    assert_eq!(warnings(&effects).len(), 1);
+    assert_eq!(visible(&state), ["b"], "the refused undo changed nothing");
+    assert!(state.undo.can_undo(), "and the entry is still there");
+}
+
+#[test]
+fn undo_of_a_change_elsewhere_is_allowed_while_a_bucket_is_locked() {
+    let (mut state, project) = app_with_project(&["loose"], &["owned"]);
+    state.view = ViewId::Project(project.clone());
+    state.cursor = Some(
+        state.ws.todos(&Bucket::Project(project.clone()))[0]
+            .id
+            .clone(),
+    );
+    send(&mut state, &A::DeleteTodo);
+    assert!(state.ws.todos(&Bucket::Project(project.clone())).is_empty());
+
+    state.ws.mark_read_only(Bucket::All);
+    let effects = send(&mut state, &A::Undo);
+
+    assert!(
+        warnings(&effects).is_empty(),
+        "one damaged file must not disable undo everywhere else"
+    );
+    assert_eq!(state.ws.todos(&Bucket::Project(project)).len(), 1);
+}

@@ -38,6 +38,11 @@ pub struct Toast {
     pub seq: u64,
 }
 
+/// A mutation was refused because it would have written a file we could not read.
+/// Carries the file so the message can name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Locked(pub Target);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
     Save(Target),
@@ -351,12 +356,28 @@ impl AppState {
     }
 
     /// The single place the workspace may be mutated. Snapshot, apply, check, record.
-    fn mutate<R>(&mut self, change: impl FnOnce(&mut Workspace) -> (R, Touched)) -> R {
+    fn mutate<R>(
+        &mut self,
+        change: impl FnOnce(&mut Workspace) -> (R, Touched),
+    ) -> Result<R, Locked> {
+        // Needed for the rollback below whether or not it becomes an undo entry.
+        let before = self.snapshot();
         if self.session.is_none() {
-            self.undo.push(self.snapshot());
+            self.undo.push(before.clone());
         }
         let (result, touched) = change(&mut self.ws);
         debug_assert!(self.ws.is_valid(), "a mutation left the workspace invalid");
+
+        // Refusing after the fact rather than before: only the change itself knows which
+        // files it touches, and rolling back to a snapshot we already hold is cheaper than
+        // asking every caller to predict them. Nothing observable happens in between.
+        if let Some(locked) = self.locked_by(&touched) {
+            self.ws = before.ws;
+            if self.session.is_none() {
+                self.undo.pop();
+            }
+            return Err(locked);
+        }
 
         if let Some(session) = self.session.as_mut() {
             for target in &touched.saves {
@@ -366,7 +387,7 @@ impl AppState {
             }
         }
         self.dirty.absorb(touched);
-        result
+        Ok(result)
     }
 
     fn snapshot(&self) -> Snapshot {
@@ -428,6 +449,37 @@ impl AppState {
         for target in targets {
             self.dirty.mark(target);
         }
+    }
+
+    /// The first file in `touched` that we could not read, and so must not write.
+    fn locked_by(&self, touched: &Touched) -> Option<Locked> {
+        let saves = touched.saves.iter();
+        let deletes = touched.deletes.iter().map(|id| Target::Project(id.clone()));
+        saves
+            .cloned()
+            .chain(deletes)
+            .find(|target| self.ws.is_read_only(&bucket_of(target)))
+            .map(Locked)
+    }
+
+    /// Says why a keystroke did nothing. Repeatable on purpose: this answers an action,
+    /// unlike the load-time report, which is stated once and left standing.
+    fn refuse(&mut self, locked: &Locked) -> Vec<Effect> {
+        let message = match &locked.0 {
+            Target::AllTodos => "-- ungrouped todos couldn't be loaded; they're locked --".into(),
+            // Unreachable through the UI: a project whose file failed to parse yields no
+            // name, index or parent, so the loader never builds a `ProjectFile` for it and
+            // it never enters `ws.projects()` — no sidebar row, so no cursor can be put in
+            // it. Its read-only mark is keyed off the filename purely so a project restored
+            // by undo cannot overwrite a file we never read, and no undo snapshot can hold
+            // that id because it was never in a workspace. Kept because the reasoning
+            // spans the store and the reducer and is not local to either.
+            Target::Project(_) => format!(
+                "-- {} couldn't be read; this project is locked --",
+                locked.0.file_name()
+            ),
+        };
+        vec![Effect::Toast(self.new_toast(message, ToastLevel::Warning))]
     }
 
     fn resolve_cursor(&mut self, how: ResolveCursor, before: Option<usize>) {
@@ -704,10 +756,10 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
     match action {
         Action::Cursor(motion) | Action::ExtendVisual(motion) => move_cursor(state, *motion),
 
-        Action::AddTodo => add_todo(state, now),
+        Action::AddTodo => effects.extend(add_todo(state, now)),
         Action::EditTodo => edit_todo(state),
-        Action::DeleteTodo | Action::DeleteSelected => delete(state),
-        Action::ToggleTodo | Action::ToggleSelected => toggle(state, now),
+        Action::DeleteTodo | Action::DeleteSelected => effects.extend(delete(state)),
+        Action::ToggleTodo | Action::ToggleSelected => effects.extend(toggle(state, now)),
         Action::Move(dir) => effects.extend(move_todos(state, *dir)),
 
         Action::EnterVisual => {
@@ -722,7 +774,7 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
                 apply_edit_key(&mut editing.input, *key);
             }
         }
-        Action::ConfirmEdit => confirm_edit(state),
+        Action::ConfirmEdit => effects.extend(confirm_edit(state)),
         Action::CancelEdit => cancel_edit(state),
 
         Action::EnterSearch => {
@@ -757,6 +809,24 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
         _ => {}
     }
     effects
+}
+
+/// The first locked bucket whose contents `target` would actually change. Buckets the
+/// restore leaves identical are no reason to refuse it.
+fn locked_difference(current: &Workspace, target: &Workspace) -> Option<Target> {
+    let mut buckets = vec![Bucket::All];
+    for id in project_ids(current).into_iter().chain(project_ids(target)) {
+        let bucket = Bucket::Project(id);
+        if !buckets.contains(&bucket) {
+            buckets.push(bucket);
+        }
+    }
+    buckets
+        .into_iter()
+        .find(|bucket| {
+            current.is_read_only(bucket) && current.todos(bucket) != target.todos(bucket)
+        })
+        .map(|bucket| target_of(&bucket))
 }
 
 fn project_ids(ws: &Workspace) -> Vec<ProjectId> {
@@ -832,23 +902,29 @@ fn move_cursor(state: &mut AppState, motion: Motion) {
     state.set_cursor_index(next);
 }
 
-fn add_todo(state: &mut AppState, now: i64) {
+fn add_todo(state: &mut AppState, now: i64) -> Vec<Effect> {
     let (bucket, at) = state.insert_point();
     let todo = Todo::new("", now);
     let id = todo.id.clone();
 
     state.begin_session();
     let target = target_of(&bucket);
-    state.mutate(|ws| {
+    let inserted = state.mutate(|ws| {
         ws.insert_todo(&bucket, at, todo);
         ((), Touched::saving(target))
     });
+    if let Err(locked) = inserted {
+        // `begin_session` pushed a snapshot that no longer describes anything.
+        state.abort_session();
+        return state.refuse(&locked);
+    }
 
     state.cursor = Some(id.clone());
     state.main = MainState::Insert(Editing {
         target: EditTarget::New(id),
         input: TextInput::new(""),
     });
+    Vec::new()
 }
 
 fn edit_todo(state: &mut AppState) {
@@ -868,32 +944,43 @@ fn edit_todo(state: &mut AppState) {
     });
 }
 
-fn confirm_edit(state: &mut AppState) {
+fn confirm_edit(state: &mut AppState) -> Vec<Effect> {
     let MainState::Insert(editing) = std::mem::take(&mut state.main) else {
-        return;
+        return Vec::new();
     };
     let blank = editing.input.is_blank();
     let id = editing.id().clone();
     let text = editing.input.into_text();
 
-    match editing.target {
+    let written = match editing.target {
         // Confirming an empty new todo discards it, exactly as escaping would.
-        EditTarget::New(_) if blank => state.abort_session(),
+        EditTarget::New(_) if blank => {
+            state.abort_session();
+            Ok(())
+        }
         EditTarget::New(_) => {
-            state.mutate(|ws| {
+            let written = state.mutate(|ws| {
                 ws.set_text(&id, text);
                 ((), touched_for(ws, &id))
             });
-            state.end_session();
+            if written.is_err() {
+                state.abort_session();
+            } else {
+                state.end_session();
+            }
+            written
         }
         // An emptied existing todo reverts rather than vanishing.
-        EditTarget::Existing { original, .. } if blank || text == original => {}
-        EditTarget::Existing { .. } => {
-            state.mutate(|ws| {
-                ws.set_text(&id, text);
-                ((), touched_for(ws, &id))
-            });
-        }
+        EditTarget::Existing { original, .. } if blank || text == original => Ok(()),
+        EditTarget::Existing { .. } => state.mutate(|ws| {
+            ws.set_text(&id, text);
+            ((), touched_for(ws, &id))
+        }),
+    };
+
+    match written {
+        Ok(()) => Vec::new(),
+        Err(locked) => state.refuse(&locked),
     }
 }
 
@@ -920,12 +1007,12 @@ fn apply_edit_key(input: &mut TextInput, key: EditKey) {
     }
 }
 
-fn delete(state: &mut AppState) {
+fn delete(state: &mut AppState) -> Vec<Effect> {
     let ids = state.selected_ids();
     if ids.is_empty() {
-        return;
+        return Vec::new();
     }
-    state.mutate(|ws| {
+    let removed = state.mutate(|ws| {
         // Read before the removal: afterwards the todos have no bucket to name.
         let touched = touched_for_all(ws, &ids);
         for id in &ids {
@@ -933,21 +1020,29 @@ fn delete(state: &mut AppState) {
         }
         ((), touched)
     });
+    if let Err(locked) = removed {
+        return state.refuse(&locked);
+    }
     state.main = MainState::Normal;
+    Vec::new()
 }
 
-fn toggle(state: &mut AppState, now: i64) {
+fn toggle(state: &mut AppState, now: i64) -> Vec<Effect> {
     let ids = state.selected_ids();
     if ids.is_empty() {
-        return;
+        return Vec::new();
     }
-    state.mutate(|ws| {
+    let toggled = state.mutate(|ws| {
         for id in &ids {
             ws.toggle(id, now);
         }
         ((), touched_for_all(ws, &ids))
     });
+    if let Err(locked) = toggled {
+        return state.refuse(&locked);
+    }
     state.main = MainState::Normal;
+    Vec::new()
 }
 
 fn move_todos(state: &mut AppState, dir: Dir) -> Vec<Effect> {
@@ -966,22 +1061,26 @@ fn move_todos(state: &mut AppState, dir: Dir) -> Vec<Effect> {
         Reorder::Blocked(Blocked::Edge) => Vec::new(),
         Reorder::Move { ref bucket, .. } => {
             let target = target_of(bucket);
-            state.mutate(|ws| {
+            match state.mutate(|ws| {
                 reorder::apply(ws, &plan);
                 ((), Touched::saving(target))
-            });
-            Vec::new()
+            }) {
+                Ok(()) => Vec::new(),
+                Err(locked) => state.refuse(&locked),
+            }
         }
         Reorder::Reassign {
             ref to, ref ids, ..
         } => {
             let label = section_label(state, to);
             let destination = target_of(to);
-            state.mutate(|ws| {
+            if let Err(locked) = state.mutate(|ws| {
                 let touched = touched_for_all(ws, ids).and_save(destination);
                 reorder::apply(ws, &plan);
                 ((), touched)
-            });
+            }) {
+                return state.refuse(&locked);
+            }
             vec![Effect::Toast(state.new_toast(
                 format!("-- moved to {label} --"),
                 ToastLevel::Info,
@@ -1002,6 +1101,19 @@ fn section_label(state: &AppState, bucket: &Bucket) -> String {
 }
 
 fn undo(state: &mut AppState, backwards: bool) -> Vec<Effect> {
+    // Checked before the stack moves, and only against buckets the restore would really
+    // change. Refusing whenever a restore merely *mentions* a locked bucket would disable
+    // undo for the whole session over one damaged file, including undos of edits made
+    // somewhere else entirely.
+    let peeked = if backwards {
+        state.undo.peek_undo()
+    } else {
+        state.undo.peek_redo()
+    };
+    if let Some(target) = peeked.and_then(|snapshot| locked_difference(&state.ws, &snapshot.ws)) {
+        return state.refuse(&Locked(target));
+    }
+
     let current = state.snapshot();
     let restored = if backwards {
         state.undo.undo(current)
@@ -1142,12 +1254,14 @@ fn sidebar_project_op(state: &mut AppState, action: SidebarAction) -> Vec<Effect
                 .iter()
                 .map(|p| Target::Project(p.id.clone()))
                 .collect();
-            state.mutate(|ws| {
+            match state.mutate(|ws| {
                 let moved = ws.reorder_project(&id, down);
                 debug_assert!(moved, "a reorder ruled possible did not happen");
                 ((), Touched::saving_all(files))
-            });
-            Vec::new()
+            }) {
+                Ok(()) => Vec::new(),
+                Err(locked) => state.refuse(&locked),
+            }
         }
         _ => Vec::new(),
     }
@@ -1168,20 +1282,28 @@ fn confirm_sidebar_edit(state: &mut AppState) -> Vec<Effect> {
                 ProjectEdit::NewChild(id) => Some(id.clone()),
                 _ => None,
             };
-            let id = state.mutate(|ws| {
+            let created = state.mutate(|ws| {
                 let id = ws.add_project(name, parent);
                 let touched = Touched::saving(Target::Project(id.clone()));
                 (id, touched)
             });
-            state.sidebar_cursor = SidebarCursor::Project(id);
-            let view = state.view_for_sidebar();
-            state.switch_view(view);
+            match created {
+                Ok(id) => {
+                    state.sidebar_cursor = SidebarCursor::Project(id);
+                    let view = state.view_for_sidebar();
+                    state.switch_view(view);
+                }
+                Err(locked) => return state.refuse(&locked),
+            }
         }
         ProjectEdit::Rename(id) => {
-            state.mutate(|ws| {
+            let renamed = state.mutate(|ws| {
                 ws.rename_project(&id, name);
                 ((), Touched::saving(Target::Project(id.clone())))
             });
+            if let Err(locked) = renamed {
+                return state.refuse(&locked);
+            }
         }
     }
     Vec::new()
@@ -1190,10 +1312,13 @@ fn confirm_sidebar_edit(state: &mut AppState) -> Vec<Effect> {
 fn delete_project(state: &mut AppState, id: &ProjectId) -> Vec<Effect> {
     let items = state.sidebar_items();
     let index = state.sidebar_index();
-    let removed = state.mutate(|ws| {
+    let removed = match state.mutate(|ws| {
         let removed = ws.delete_project(id);
         (removed.clone(), Touched::deleting(removed))
-    });
+    }) {
+        Ok(removed) => removed,
+        Err(locked) => return state.refuse(&locked),
+    };
 
     // Land on whatever now occupies the deleted row, which is the entry below it.
     let survivors = state.sidebar_items();

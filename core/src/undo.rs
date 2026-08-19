@@ -68,6 +68,18 @@ impl UndoStack {
         self.undo.pop_back()
     }
 
+    /// The snapshot the next undo would restore, without moving the stack. Lets a caller
+    /// refuse a restore before it has happened.
+    #[must_use]
+    pub fn peek_undo(&self) -> Option<&Snapshot> {
+        self.undo.back()
+    }
+
+    #[must_use]
+    pub fn peek_redo(&self) -> Option<&Snapshot> {
+        self.redo.last()
+    }
+
     pub fn undo(&mut self, current: Snapshot) -> Option<Snapshot> {
         let previous = self.undo.pop_back()?;
         self.redo.push(current);
