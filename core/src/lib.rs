@@ -9,7 +9,9 @@
 pub mod id;
 pub mod project;
 pub mod todo;
+pub mod workspace;
 
 pub use id::{ProjectId, TodoId};
 pub use project::{Project, Projects};
 pub use todo::Todo;
+pub use workspace::{Bucket, Workspace};
