@@ -12,7 +12,7 @@ use doer_core::todo::SECONDS_PER_DAY;
 use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 
 #[derive(Clone, Debug)]
-pub(crate) enum Input {
+pub enum Input {
     Key(KeyEvent),
     Paste(String),
     Resize(u16, u16),
@@ -23,7 +23,7 @@ pub(crate) enum Input {
     ToastExpire(u64),
 }
 
-pub(crate) struct Events {
+pub struct Events {
     rx: Receiver<Input>,
     tx: Sender<Input>,
 }
@@ -32,7 +32,8 @@ impl Events {
     /// Spawns the reader and the day-boundary timer. Both are detached: `event::read`
     /// is uninterruptible, so joining it would hang until the user happened to press a
     /// key. They exit on their own once the receiver drops.
-    pub(crate) fn start(now: i64) -> Self {
+    #[must_use]
+    pub fn start(now: i64) -> Self {
         let (tx, rx) = mpsc::channel();
         spawn_reader(tx.clone());
         spawn_day_timer(tx.clone(), now);
@@ -42,17 +43,17 @@ impl Events {
     /// Blocks until something happens. An `Err` means every sender is gone, which the
     /// caller must treat as quit — otherwise the app sits in a dead loop holding a live
     /// terminal, which looks exactly like a hang.
-    pub(crate) fn next(&self) -> Result<Input, RecvError> {
+    pub fn next(&self) -> Result<Input, RecvError> {
         self.rx.recv()
     }
 
     /// Everything already queued behind the last `next`. Draining a burst — held `j`,
     /// a dragged window corner — into one batch collapses it into a single redraw.
-    pub(crate) fn drain(&self) -> impl Iterator<Item = Input> + '_ {
+    pub fn drain(&self) -> impl Iterator<Item = Input> + '_ {
         self.rx.try_iter()
     }
 
-    pub(crate) fn arm_toast(&self, seq: u64, ttl: Duration) {
+    pub fn arm_toast(&self, seq: u64, ttl: Duration) {
         let tx = self.tx.clone();
         thread::spawn(move || {
             thread::sleep(ttl);

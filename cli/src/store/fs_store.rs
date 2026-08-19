@@ -492,30 +492,6 @@ struct ProjectFileOut<'a> {
     todos: Vec<Value>,
 }
 
-/// Splits an array into the todos we understood and the entries we did not, keeping the
-/// latter verbatim at the position they held.
-fn split_entries(
-    path: &Path,
-    raw: Vec<Value>,
-    problems: &mut Vec<Problem>,
-) -> (Vec<Todo>, Unparsed) {
-    let mut todos = Vec::with_capacity(raw.len());
-    let mut unparsed = Unparsed::new();
-    for (index, entry) in raw.into_iter().enumerate() {
-        match serde_json::from_value(entry.clone()) {
-            Ok(todo) => todos.push(todo),
-            Err(err) => {
-                problems.push(Problem::SkippedEntry {
-                    path: path.to_path_buf(),
-                    detail: err.to_string(),
-                });
-                unparsed.push((index, entry));
-            }
-        }
-    }
-    (todos, unparsed)
-}
-
 fn has_unknown_keys(entry: &Value) -> bool {
     entry.as_object().is_some_and(|object| {
         object

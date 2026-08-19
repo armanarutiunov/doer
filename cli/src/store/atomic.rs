@@ -6,7 +6,7 @@ use std::process;
 /// Writes `bytes` to `path` so that a crash leaves either the old file or the new one,
 /// never a half-written one: write a sibling temp file, flush it to the disk, then rename
 /// over the target. The rename is atomic because both paths are in the same directory.
-pub fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = temp_path(path);
     if let Err(err) = write_and_sync(&tmp, bytes) {
         let _ = fs::remove_file(&tmp);

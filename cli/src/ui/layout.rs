@@ -9,7 +9,6 @@ const CONTENT_PERCENT: u32 = 60;
 const CONTENT_MIN_WIDTH: u16 = 20;
 const PAD_TOP: u16 = 1;
 /// blank, search line, blank, mode bar, blank
-const BOTTOM_RESERVED: u16 = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Frames {

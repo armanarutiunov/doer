@@ -11,26 +11,26 @@ use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 
-pub(crate) type Tty = Terminal<CrosstermBackend<Stdout>>;
+pub type Tty = Terminal<CrosstermBackend<Stdout>>;
 
 /// Seam for the store's flush-on-panic. The writer registers itself here at startup;
 /// the panic hook is the only reader.
-pub(crate) trait PanicFlush: Send + Sync {
+pub trait PanicFlush: Send + Sync {
     /// Must not panic and must not block past `timeout` — it runs inside a panic hook.
     fn flush_blocking(&self, timeout: Duration);
 }
 
-pub(crate) static SAVER: OnceLock<Box<dyn PanicFlush>> = OnceLock::new();
+pub static SAVER: OnceLock<Box<dyn PanicFlush>> = OnceLock::new();
 
 const PANIC_FLUSH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Owns the terminal's mode changes and undoes them on drop.
-pub(crate) struct TerminalGuard {
-    pub(crate) tty: Tty,
+pub struct TerminalGuard {
+    pub tty: Tty,
 }
 
 impl TerminalGuard {
-    pub(crate) fn new() -> io::Result<Self> {
+    pub fn new() -> io::Result<Self> {
         // Before `try_init`, so ratatui's own restore hook wraps ours and still runs
         // even if the flush itself panics.
         install_panic_hook();
