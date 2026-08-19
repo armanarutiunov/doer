@@ -626,14 +626,24 @@ fn q_quits_straight_away_when_nothing_has_failed() {
     assert_eq!(send(&mut state, &A::Quit), [Effect::Quit]);
 }
 
+/// The guard follows the failed write, not the message about it: a later toast replaces
+/// the warning on screen, and that must not make an unwritten file look written.
 #[test]
-fn q_asks_once_more_while_a_save_error_is_on_screen() {
+fn q_asks_once_more_while_a_save_has_failed() {
+    use doer_core::store::{StoreError, Target};
+
     let mut state = app(&["a"]);
+    state.save_failed(
+        Some(Target::AllTodos),
+        &StoreError::RefusedReadOnly {
+            target: Target::AllTodos,
+        },
+    );
     state.toast = Some(doer_core::Toast {
-        text: "save failed".into(),
-        level: ToastLevel::Error,
-        ttl_ms: None,
-        seq: 1,
+        text: "-- undo --".into(),
+        level: ToastLevel::Info,
+        ttl_ms: Some(2500),
+        seq: 9,
     });
 
     let first = send(&mut state, &A::Quit);
@@ -894,9 +904,12 @@ fn a_failed_save_is_reported_and_makes_q_ask_twice() {
     use doer_core::store::{StoreError, Target};
 
     let mut state = app(&["a"]);
-    let effect = state.save_failed(&StoreError::RefusedReadOnly {
-        target: Target::AllTodos,
-    });
+    let effect = state.save_failed(
+        Some(Target::AllTodos),
+        &StoreError::RefusedReadOnly {
+            target: Target::AllTodos,
+        },
+    );
 
     let Effect::Toast(toast) = effect else {
         panic!("expected a toast");
@@ -909,17 +922,45 @@ fn a_failed_save_is_reported_and_makes_q_ask_twice() {
 }
 
 #[test]
-fn a_later_successful_save_clears_the_error() {
+fn a_later_successful_save_of_the_same_file_clears_the_error() {
     use doer_core::store::{StoreError, Target};
 
     let mut state = app(&["a"]);
-    state.save_failed(&StoreError::RefusedReadOnly {
-        target: Target::AllTodos,
-    });
-    state.save_succeeded();
+    state.save_failed(
+        Some(Target::AllTodos),
+        &StoreError::RefusedReadOnly {
+            target: Target::AllTodos,
+        },
+    );
+    state.save_succeeded(&Target::AllTodos);
 
     assert!(state.toast.is_none());
+    assert!(!state.has_failed_saves());
     assert!(send(&mut state, &A::Quit).contains(&Effect::Quit));
+}
+
+/// A write to one file says nothing about another. Clearing the warning on it would
+/// retract it while the stale file is still on disk, and let `q` exit without asking.
+#[test]
+fn a_successful_save_of_another_file_leaves_the_error_standing() {
+    use doer_core::id::ProjectId;
+    use doer_core::store::{StoreError, Target};
+
+    let mut state = app(&["a"]);
+    state.save_failed(
+        Some(Target::AllTodos),
+        &StoreError::RefusedReadOnly {
+            target: Target::AllTodos,
+        },
+    );
+    state.save_succeeded(&Target::Project(ProjectId::from("0123456789abcdef")));
+
+    assert!(state.toast.is_some(), "the warning must survive");
+    assert!(state.has_failed_saves());
+    assert!(
+        !send(&mut state, &A::Quit).contains(&Effect::Quit),
+        "q must still ask"
+    );
 }
 
 #[test]

@@ -42,8 +42,8 @@ enum Message {
 /// as failures: a standing "save failed" message must only be cleared by a write that
 /// actually got through, not by the next keystroke.
 pub enum Report {
-    Wrote,
-    Failed(StoreError),
+    Wrote(Target),
+    Failed(Target, StoreError),
 }
 
 pub struct Saver {
@@ -242,10 +242,10 @@ impl Worker {
         }
     }
 
-    fn report(&self, result: Result<(), StoreError>) {
+    fn report(&self, target: Target, result: Result<(), StoreError>) {
         let _ = self.reports.send(match result {
-            Ok(()) => Report::Wrote,
-            Err(error) => Report::Failed(error),
+            Ok(()) => Report::Wrote(target),
+            Err(error) => Report::Failed(target, error),
         });
     }
 
@@ -253,9 +253,10 @@ impl Worker {
         // Deletes go first, so undoing a delete -- which queues a write for the same
         // file -- ends with the file present rather than removed.
         for id in deletes.drain(..) {
-            self.report(self.store.delete_project(&id));
+            let result = self.store.delete_project(&id);
+            self.report(Target::Project(id), result);
         }
-        for (_, job) in pending.drain() {
+        for (target, job) in pending.drain() {
             let result = match job {
                 Job::AllTodos(todos) => self.store.save_all_todos(&todos),
                 Job::Project(file) => self.store.save_project(&file),
@@ -263,7 +264,7 @@ impl Worker {
                 // that it can be applied before the writes.
                 Job::Delete(id) => self.store.delete_project(&id),
             };
-            self.report(result);
+            self.report(target, result);
         }
     }
 }

@@ -96,6 +96,9 @@ fn run() -> anyhow::Result<()> {
         // burst shares a timestamp and the age labels cannot disagree within a frame.
         let moment = now();
         for input in batch {
+            if matches!(input, Input::Closed) {
+                return finish(saver, FLUSH_TIMEOUT);
+            }
             for action in actions_for(input, &app) {
                 // reduce puts its saves and deletes before Quit, which is what makes
                 // returning from the middle of this loop safe. Anything emitted after a
@@ -119,16 +122,16 @@ fn run() -> anyhow::Result<()> {
         // ever reports it.
         if saver.has_died() && !saving_broken {
             saving_broken = true;
-            let effect = app.save_failed(&StoreError::WriterStopped);
+            let effect = app.save_failed(None, &StoreError::WriterStopped);
             apply(&effect, &app, &saver, &events);
             dirty = true;
         }
 
         for report in saver.reports().collect::<Vec<_>>() {
             match report {
-                Report::Wrote => app.save_succeeded(),
-                Report::Failed(error) => {
-                    let effect = app.save_failed(&error);
+                Report::Wrote(target) => app.save_succeeded(&target),
+                Report::Failed(target, error) => {
+                    let effect = app.save_failed(Some(target), &error);
                     apply(&effect, &app, &saver, &events);
                 }
             }
@@ -205,7 +208,9 @@ fn actions_for(input: Input, app: &AppState) -> Vec<Action> {
                 )
             })
             .collect(),
-        Input::Paste(_) => Vec::new(),
+        // A paste outside a text field is dropped rather than read as keybindings, and
+        // `Closed` is handled by the event loop, which has to leave rather than reduce.
+        Input::Paste(_) | Input::Closed => Vec::new(),
         Input::Resize(width, height) => vec![Action::Resize(width, height)],
         Input::DayChanged => vec![Action::DayChanged],
         Input::ToastExpire(seq) => vec![Action::ToastExpire(seq)],

@@ -169,6 +169,9 @@ pub struct AppState {
     pub help: bool,
     pub toast: Option<Toast>,
     toast_seq: u64,
+    /// Files whose last write failed. Tracked per file, because a success elsewhere is
+    /// not evidence about this one.
+    failed_saves: Vec<Target>,
 
     pub undo: UndoStack,
     dirty: DirtySet,
@@ -182,6 +185,7 @@ impl AppState {
     #[must_use]
     pub fn new(ws: Workspace, geo: Geometry) -> Self {
         let mut state = Self {
+            failed_saves: Vec::new(),
             ws,
             view: ViewId::All,
             views: Vec::new(),
@@ -231,15 +235,31 @@ impl AppState {
 
     /// The shell reports a failed write back through here so the message, the quit
     /// guard and the still-dirty target all stay in one place.
-    pub fn save_failed(&mut self, error: &StoreError) -> Effect {
+    pub fn save_failed(&mut self, target: Option<Target>, error: &StoreError) -> Effect {
+        if let Some(target) = target
+            && !self.failed_saves.contains(&target)
+        {
+            self.failed_saves.push(target);
+        }
         Effect::Toast(self.new_toast(error.toast(), ToastLevel::Error))
     }
 
-    /// Clears a standing save error once a later write gets through.
-    pub fn save_succeeded(&mut self) {
-        if self.has_error_toast() {
+    /// Clears a standing save error once THAT file gets written. A success elsewhere
+    /// says nothing about the file that failed, and clearing on it would retract the
+    /// warning while the stale data is still on disk.
+    pub fn save_succeeded(&mut self, target: &Target) {
+        self.failed_saves.retain(|failed| failed != target);
+        if self.failed_saves.is_empty() && self.has_error_toast() {
             self.toast = None;
         }
+    }
+
+    /// True while any file is known to have failed its last write. The quit guard reads
+    /// this rather than the toast, so a message that has scrolled away cannot make an
+    /// unsaved file look saved.
+    #[must_use]
+    pub fn has_failed_saves(&self) -> bool {
+        !self.failed_saves.is_empty()
     }
 
     /// Kept on `geo` alone, because that is what the layout reads; a second copy on
@@ -735,7 +755,10 @@ fn chrome(state: &mut AppState, action: &Action) -> Option<Vec<Effect>> {
         Action::ToggleHelp => state.help = !state.help,
 
         Action::Quit => {
-            if state.has_error_toast() && !state.quit_armed {
+            // Reads the tracked failures rather than the toast: any later message
+            // replaces the toast, and a warning that has been superseded must not let
+            // the user exit believing everything was written.
+            if state.has_failed_saves() && !state.quit_armed {
                 state.quit_armed = true;
                 effects.push(Effect::Toast(state.new_toast(
                     "-- save failed; press q again to quit anyway --",
