@@ -37,11 +37,14 @@ impl Events {
     /// Spawns the reader and the day-boundary timer. Both are detached: `event::read`
     /// is uninterruptible, so joining it would hang until the user happened to press a
     /// key. They exit on their own once the receiver drops.
+    ///
+    /// `clock` reads the wall clock in unix seconds. The timer holds it rather than a
+    /// timestamp because it has to ask again after every wake.
     #[must_use]
-    pub fn start(now: i64) -> Self {
+    pub fn start(clock: fn() -> i64) -> Self {
         let (tx, rx) = mpsc::channel();
         spawn_reader(tx.clone());
-        spawn_day_timer(tx.clone(), now);
+        spawn_day_timer(tx.clone(), clock);
         Self { rx, tx }
     }
 
@@ -89,18 +92,19 @@ fn spawn_reader(tx: Sender<Input>) {
     });
 }
 
-/// Sleeps to the next boundary rather than ticking, and recomputes the target after
-/// every wake so a suspended laptop resumes on the right schedule.
-fn spawn_day_timer(tx: Sender<Input>, start: i64) {
+/// Sleeps to the next boundary rather than ticking.
+///
+/// The wall clock is read again after every wake, never advanced by the amount slept:
+/// a suspended machine resumes hours later than it went to sleep, and a timer that
+/// trusted its own arithmetic would keep firing at the resume time for the life of the
+/// process, leaving the age labels stale until then.
+fn spawn_day_timer(tx: Sender<Input>, clock: fn() -> i64) {
     thread::spawn(move || {
-        let mut now = start;
         loop {
-            let wait = seconds_until_next_day(now);
-            thread::sleep(Duration::from_secs(wait));
+            thread::sleep(Duration::from_secs(seconds_until_next_day(clock())));
             if tx.send(Input::DayChanged).is_err() {
                 return;
             }
-            now += i64::try_from(wait).unwrap_or(SECONDS_PER_DAY);
         }
     });
 }
@@ -121,6 +125,15 @@ mod tests {
         assert_eq!(seconds_until_next_day(1), 86_399);
         assert_eq!(seconds_until_next_day(86_399), 1);
         assert_eq!(seconds_until_next_day(86_400), 86_400);
+    }
+
+    #[test]
+    fn a_wake_after_a_suspend_targets_the_next_real_midnight() {
+        // Slept at 23:00, woke at 09:00 the next day. Asked with the clock as it now
+        // reads, the next wait is the 15 hours to the coming midnight -- not the full
+        // day that advancing the previous target by the time slept would have given.
+        let resumed = 86_400 + 9 * 3_600;
+        assert_eq!(seconds_until_next_day(resumed), 15 * 3_600);
     }
 
     #[test]

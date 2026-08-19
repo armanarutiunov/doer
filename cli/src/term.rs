@@ -35,9 +35,16 @@ impl TerminalGuard {
         // even if the flush itself panics.
         install_panic_hook();
 
-        let tty = ratatui::try_init()?;
+        // The guard is constructed the moment `try_init` succeeds, so everything after
+        // it is covered by `Drop`. Enabling paste and hiding the cursor afterwards would
+        // otherwise be able to fail with raw mode on and the alternate screen entered
+        // but no guard in existence to undo either, dropping the user back into a shell
+        // with no echo and printing the error into a screen they can no longer see.
+        let guard = Self {
+            tty: ratatui::try_init()?,
+        };
         execute!(io::stdout(), EnableBracketedPaste, Hide)?;
-        Ok(Self { tty })
+        Ok(guard)
     }
 }
 
