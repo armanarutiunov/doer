@@ -237,7 +237,11 @@ impl FsStore {
     }
 
     /// The array a file will hold: current todos, any unknown fields they arrived with put
-    /// back, and the entries we could not read restored at their original index.
+    /// back, and the entries we could not read restored at their original index. An entry
+    /// whose index no longer exists lands at the end rather than being dropped.
+    ///
+    /// `serde_json`'s `preserve_order` feature is what keeps a carried entry's keys in
+    /// their original order here — the default `BTreeMap` backing would re-sort them.
     fn todo_array(
         &self,
         todos: &[Todo],

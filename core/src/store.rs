@@ -13,6 +13,11 @@
 //!   two-machine world survivable, and it is enforced by `cli/tests/byte_compat.rs`.
 //! - **Field order and formatting are part of the contract.** See `ProjectFile` below.
 //!
+//! `serde_json`'s `preserve_order` feature is load-bearing for the second point, not an
+//! unused dependency flag: it backs `Value`'s map with an `IndexMap` instead of a
+//! `BTreeMap`, so a carried entry's keys keep the order they had on disk. Removing it
+//! silently re-sorts the keys of files we do not understand.
+//!
 //! Deliberately absent, and deliberately not precluded: schema versions, file locking, and
 //! any notion of sync. None of them are needed today.
 
@@ -211,38 +216,25 @@ fn name_of(path: &Path) -> String {
 /// The `Display` impl keeps the detail for a debug dump.
 #[must_use]
 pub fn toasts(problems: &[Problem]) -> Vec<(String, Severity)> {
-    let mut skipped: Vec<(String, usize)> = Vec::new();
-    let mut out = Vec::new();
-    for problem in problems {
-        match problem {
-            Problem::SkippedEntry { path, .. } => {
-                let name = name_of(path);
-                match skipped.iter_mut().find(|(n, _)| *n == name) {
-                    Some((_, count)) => *count += 1,
-                    None => skipped.push((name, 1)),
-                }
-            }
-            Problem::Unreadable { path, .. } | Problem::Corrupt { path, .. } => out.push((
+    problems
+        .iter()
+        .filter_map(|problem| match problem {
+            Problem::Unreadable { path, .. } | Problem::Corrupt { path, .. } => Some((
                 format!(
                     "-- {} couldn't be read; changes here won't be saved --",
                     name_of(path)
                 ),
                 Severity::Error,
             )),
-            Problem::Migrated { .. }
+            // A skipped entry is deliberately silent: nothing is lost, there is nothing to
+            // act on, and it would recur on every load. A status line that cries wolf about
+            // a handled case trains the user to ignore the two messages that do matter.
+            Problem::SkippedEntry { .. }
+            | Problem::Migrated { .. }
             | Problem::NonCanonicalId { .. }
-            | Problem::TrashPruneFailed { .. } => {}
-        }
-    }
-    for (name, count) in skipped {
-        let text = if count == 1 {
-            format!("-- {name}: 1 entry doer can't read, kept as-is --")
-        } else {
-            format!("-- {name}: {count} entries doer can't read, kept as-is --")
-        };
-        out.push((text, Severity::Warning));
-    }
-    out
+            | Problem::TrashPruneFailed { .. } => None,
+        })
+        .collect()
 }
 
 impl StoreError {
@@ -538,33 +530,29 @@ mod toast_tests {
     }
 
     #[test]
-    fn one_unreadable_entry_reads_as_a_singular_warning() {
-        let lines = toasts(&[skipped("all-todos.json")]);
-        assert_eq!(
-            lines,
-            [(
-                "-- all-todos.json: 1 entry doer can't read, kept as-is --".to_string(),
-                Severity::Warning
-            )]
+    fn an_entry_we_carried_is_not_worth_telling_the_user_about() {
+        let lines = toasts(&[
+            skipped("all-todos.json"),
+            skipped("all-todos.json"),
+            skipped("b.json"),
+        ]);
+        assert!(
+            lines.is_empty(),
+            "nothing was lost and there is nothing to act on: {lines:?}"
         );
     }
 
     #[test]
-    fn several_unreadable_entries_in_one_file_make_one_plural_warning() {
-        let lines = toasts(&[skipped("all-todos.json"), skipped("all-todos.json")]);
-        assert_eq!(
-            lines,
-            [(
-                "-- all-todos.json: 2 entries doer can't read, kept as-is --".to_string(),
-                Severity::Warning
-            )]
-        );
-    }
-
-    #[test]
-    fn each_file_gets_its_own_line() {
-        let lines = toasts(&[skipped("a.json"), skipped("b.json"), skipped("a.json")]);
-        assert_eq!(lines.len(), 2);
+    fn a_carried_entry_does_not_drown_out_a_file_that_would_not_load() {
+        let lines = toasts(&[
+            skipped("all-todos.json"),
+            Problem::Corrupt {
+                path: PathBuf::from("/home/x/.doer/projects/abc.json"),
+                detail: "EOF".into(),
+            },
+        ]);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].1, Severity::Error);
     }
 
     #[test]
