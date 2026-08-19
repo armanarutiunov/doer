@@ -116,6 +116,10 @@ pub enum StoreError {
     /// The load of this target failed, so writing would destroy data we could not read.
     #[error("not saving {target}: its file failed to load")]
     RefusedReadOnly { target: Target },
+    /// The thread that performs writes has died. Nothing will be saved for the rest of
+    /// the session, so this has to be said out loud rather than inferred from silence.
+    #[error("saving has stopped")]
+    WriterStopped,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,10 +149,12 @@ pub enum Problem {
         from: PathBuf,
         to: PathBuf,
     },
-    /// An id that cannot be used as a filename; the file is written under a safe name.
-    NonCanonicalId {
+    /// Two files claim the same project. Only the first is used, because loading both
+    /// would show the project twice and let each save discard the other's todos.
+    DuplicateProject {
+        path: PathBuf,
+        kept: PathBuf,
         id: String,
-        saved_as: PathBuf,
     },
     TrashPruneFailed {
         path: PathBuf,
@@ -165,7 +171,7 @@ impl Problem {
             // back where it was, so the file stays writable and the load stays lossless.
             Self::SkippedEntry { .. }
             | Self::Migrated { .. }
-            | Self::NonCanonicalId { .. }
+            | Self::DuplicateProject { .. }
             | Self::TrashPruneFailed { .. } => Severity::Warning,
         }
     }
@@ -190,11 +196,12 @@ impl fmt::Display for Problem {
             Self::Migrated { from, to } => {
                 write!(f, "migrated {} to {}", name_of(from), name_of(to))
             }
-            Self::NonCanonicalId { id, saved_as } => {
+            Self::DuplicateProject { path, kept, id } => {
                 write!(
                     f,
-                    "id {id:?} is not a safe filename; saving as {}",
-                    name_of(saved_as)
+                    "{} also claims project {id:?}; using {} and leaving it alone",
+                    name_of(path),
+                    name_of(kept)
                 )
             }
             Self::TrashPruneFailed { path, detail } => {
@@ -231,7 +238,7 @@ pub fn toasts(problems: &[Problem]) -> Vec<(String, Severity)> {
             // a handled case trains the user to ignore the two messages that do matter.
             Problem::SkippedEntry { .. }
             | Problem::Migrated { .. }
-            | Problem::NonCanonicalId { .. }
+            | Problem::DuplicateProject { .. }
             | Problem::TrashPruneFailed { .. } => None,
         })
         .collect()
@@ -247,6 +254,9 @@ impl StoreError {
             }
             Self::Write { path, .. } => {
                 format!("-- couldn't save {} --", name_of(path))
+            }
+            Self::WriterStopped => {
+                "-- saving has stopped; copy anything you need before quitting --".to_string()
             }
             _ => format!("-- {self} --"),
         }

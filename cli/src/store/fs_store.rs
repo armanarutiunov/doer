@@ -28,6 +28,10 @@ pub struct FsStore {
     /// by id so it follows the todo between files. Re-emitting from the original — rather
     /// than appending the extras — keeps the unknown keys in the position they held.
     carried_fields: Mutex<HashMap<TodoId, Value>>,
+    /// The file each project was actually read from. A save writes back to exactly that
+    /// path, so a file another tool named its own way keeps its name: renaming someone
+    /// else's file would leave the original behind and load as a second project.
+    files: Mutex<HashMap<ProjectId, PathBuf>>,
 }
 
 /// The keys this build owns. Anything else in a todo object belongs to another version and
@@ -53,6 +57,7 @@ impl FsStore {
             read_only: Mutex::new(HashSet::new()),
             unparsed: Mutex::new(HashMap::new()),
             carried_fields: Mutex::new(HashMap::new()),
+            files: Mutex::new(HashMap::new()),
         }
     }
 
@@ -76,8 +81,22 @@ impl FsStore {
         self.root.join(".trash")
     }
 
+    /// Where this project's file lives: the path it was loaded from if we have seen it,
+    /// otherwise a new file named after the id.
     #[must_use]
     pub fn project_path(&self, id: &ProjectId) -> PathBuf {
+        self.files
+            .lock()
+            .ok()
+            .and_then(|map| map.get(id).cloned())
+            .unwrap_or_else(|| self.new_project_path(id))
+    }
+
+    /// The name a project file gets when we are the ones creating it. Ids the app
+    /// generates are already safe; anything else is hex-encoded so it cannot contain a
+    /// path separator.
+    #[must_use]
+    pub fn new_project_path(&self, id: &ProjectId) -> PathBuf {
         self.projects_dir().join(format!("{}.json", file_stem(id)))
     }
 
@@ -186,11 +205,15 @@ impl FsStore {
                 todos,
             };
             self.remember_unparsed(Target::Project(file.id.clone()), unparsed);
-            if !file.id.is_canonical() {
-                problems.push(Problem::NonCanonicalId {
+            // Two files claiming the same project would otherwise load as two projects
+            // and each save would write only one of them.
+            if let Some(first) = self.remember_file(&file.id, &path) {
+                problems.push(Problem::DuplicateProject {
+                    path,
+                    kept: first,
                     id: file.id.to_string(),
-                    saved_as: self.project_path(&file.id),
                 });
+                continue;
             }
             files.push(file);
         }
@@ -287,6 +310,19 @@ impl FsStore {
             .unwrap_or_default()
     }
 
+    /// Records where a project was read from. Returns the path already recorded when this
+    /// id has been seen before, which means two files claim the same project.
+    fn remember_file(&self, id: &ProjectId, path: &Path) -> Option<PathBuf> {
+        let Ok(mut map) = self.files.lock() else {
+            return None;
+        };
+        if let Some(first) = map.get(id) {
+            return Some(first.clone());
+        }
+        map.insert(id.clone(), path.to_path_buf());
+        None
+    }
+
     fn mark_read_only(&self, target: Target) {
         if let Ok(mut set) = self.read_only.lock() {
             set.insert(target);
@@ -336,6 +372,9 @@ impl Store for FsStore {
         if let Ok(mut map) = self.carried_fields.lock() {
             map.clear();
         }
+        if let Ok(mut map) = self.files.lock() {
+            map.clear();
+        }
         let mut problems = self.init();
         let all_todos = self.load_all_todos(&mut problems);
         let projects = self.load_projects(&mut problems);
@@ -371,6 +410,7 @@ impl Store for FsStore {
         let target = Target::Project(file.id.clone());
         self.refuse_if_read_only(&target)?;
         let path = self.project_path(&file.id);
+        self.remember_file(&file.id, &path);
         let unparsed = self.unparsed_for(&target);
         if unparsed.is_empty() && !self.carries_fields_for(&file.todos) {
             return write_json(&path, &target, file);
@@ -399,7 +439,13 @@ impl Store for FsStore {
             source,
         })?;
         let name = path.file_name().unwrap_or(OsStr::new("project.json"));
-        fs::rename(&path, bin.join(name)).map_err(|source| StoreError::Write { path, source })
+        fs::rename(&path, bin.join(name)).map_err(|source| StoreError::Write {
+            path: path.clone(),
+            source,
+        })?;
+        // Undo re-creates the project through a normal save; it should land back in the
+        // same file, so the path stays remembered.
+        Ok(())
     }
 }
 
@@ -413,9 +459,6 @@ fn resolve_root(
     }
 }
 
-/// A filename that cannot escape the projects directory. Ids the app generates are already
-/// safe; anything else is hex-encoded, which is reversible, collision-free, and cannot
-/// contain a separator.
 fn file_stem(id: &ProjectId) -> String {
     if id.is_canonical() {
         return id.to_string();

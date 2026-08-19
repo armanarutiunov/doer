@@ -162,11 +162,11 @@ fn an_id_that_is_not_a_safe_filename_is_written_under_an_encoded_name() {
     store.load();
 
     let hostile = ProjectId::from("../../../etc/passwd");
+    let path = store.new_project_path(&hostile);
     store
         .save_project(&project("../../../etc/passwd"))
         .expect("save");
 
-    let path = store.project_path(&hostile);
     assert!(path.is_file());
     assert_eq!(
         path.parent(),
@@ -187,17 +187,80 @@ fn a_project_with_an_unsafe_id_still_round_trips_with_its_id_intact() {
 
     assert_eq!(loaded.value.projects.len(), 1);
     assert_eq!(loaded.value.projects[0].id, ProjectId::from("not hex"));
+    assert!(loaded.problems.is_empty(), "{:?}", loaded.problems);
+}
+
+/// Renaming another tool's file would leave the original behind, and the next load would
+/// read both and show the project twice.
+#[test]
+fn a_project_read_from_an_oddly_named_file_is_written_back_to_that_file() {
+    let dir = home();
+    fs::create_dir_all(dir.path().join("projects")).expect("projects dir");
+    fs::write(
+        dir.path().join("projects/not hex.json"),
+        br#"{"id":"not hex","index":0,"name":"odd id","parent_id":null,"todos":[]}"#,
+    )
+    .expect("seed");
+
+    let store = FsStore::with_root(dir.path());
+    let mut file = store.load().value.projects[0].clone();
+    file.todos.push(doer_core::Todo {
+        id: doer_core::TodoId::from("0123456789abcdef"),
+        text: "added this session".into(),
+        done: false,
+        created_at: 1,
+        completed_at: None,
+    });
+    store.save_project(&file).expect("save");
+
+    assert_eq!(
+        names_in(&store.projects_dir()),
+        ["not hex.json"],
+        "no second file appears alongside the original"
+    );
+
+    let reloaded = FsStore::with_root(dir.path()).load();
+    assert_eq!(reloaded.value.projects.len(), 1, "and no duplicate project");
+    assert_eq!(reloaded.value.projects[0].todos.len(), 1);
+    assert_eq!(
+        reloaded.value.projects[0].todos[0].text,
+        "added this session"
+    );
+}
+
+#[test]
+fn two_files_claiming_one_project_load_once_and_neither_is_overwritten() {
+    let dir = home();
+    fs::create_dir_all(dir.path().join("projects")).expect("projects dir");
+    let body = br#"{"id":"not hex","index":0,"name":"odd id","parent_id":null,"todos":[]}"#;
+    fs::write(dir.path().join("projects/aaa.json"), body).expect("seed");
+    fs::write(dir.path().join("projects/not hex.json"), body).expect("seed");
+
+    let store = FsStore::with_root(dir.path());
+    let loaded = store.load();
+
+    assert_eq!(loaded.value.projects.len(), 1, "the project loads once");
     assert!(
         loaded
             .problems
             .iter()
-            .any(|p| matches!(p, Problem::NonCanonicalId { .. })),
-        "the user is told the file is not named after the id: {:?}",
+            .any(|p| matches!(p, Problem::DuplicateProject { .. })),
+        "{:?}",
         loaded.problems
     );
     assert!(
         !loaded.is_degraded(),
-        "an odd id is a warning, not data loss"
+        "nothing was lost, so this is a warning"
+    );
+
+    let before = fs::read(dir.path().join("projects/not hex.json")).expect("read");
+    store
+        .save_project(&loaded.value.projects[0].clone())
+        .expect("save");
+    assert_eq!(
+        fs::read(dir.path().join("projects/not hex.json")).expect("read"),
+        before,
+        "the file we did not adopt is left exactly as it was"
     );
 }
 

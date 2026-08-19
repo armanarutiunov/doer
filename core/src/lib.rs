@@ -1,4 +1,7 @@
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)
+)]
 
 //! Pure domain, layout and input logic for doer.
 //!
@@ -13,6 +16,10 @@ pub mod display;
 pub mod help;
 pub mod id;
 pub mod input;
+// An index into the row list or a bucket is a real bug if it is out of range, so these
+// two modules ask for `.get()` rather than `[]`. Elsewhere an index is provably in range
+// and `.get()` would be noise.
+#[deny(clippy::indexing_slicing)]
 pub mod layout;
 pub mod mode;
 pub mod project;
@@ -21,6 +28,7 @@ pub mod store;
 pub mod text;
 pub mod todo;
 pub mod undo;
+#[deny(clippy::indexing_slicing)]
 pub mod workspace;
 
 pub use action::{Action, Dir, EditKey, Motion, ResolveCursor, SidebarAction};

@@ -337,8 +337,10 @@ impl Builder {
                 break;
             };
             let bucket = first.bucket.clone();
-            let group_len = dl.active[offset..]
+            let group_len = dl
+                .active
                 .iter()
+                .skip(offset)
                 .take_while(|entry| entry.bucket == bucket)
                 .count();
 
@@ -494,6 +496,9 @@ pub fn adjust_scroll(offset: usize, span: &Range<usize>, rows: usize, viewport: 
 
 #[cfg(test)]
 mod tests {
+    // Indexing is the point in a test: a bad index should fail the test loudly.
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
     use crate::project::Projects;
     use crate::todo::Todo;
