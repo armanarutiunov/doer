@@ -3,22 +3,22 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
   All Todos                        │                    |
-                                   │    Todos    Created|
+                                   │    Todos           |
   Projects                         │                    |
                                    │  ◯ buy milk        |
-  # Work                           │  ◯ call the        |
-    # Deep                         │    plumber         |
+  # Work                           │  ◯ call the plumber|
+    # Deep                         │                    |
+                                   │                    |
+                                   │    # Work          |
+                                   │                    |
+                                   │  ◯ a deliberately  |
+                                   │    long todo that  |
+                                   │    has to wrap     |
+                                   │    across more than|
+                                   │    one line to     |
+                                   │    prove the scroll|
                                    │                    |
                                    │                    |
-                                   │    # Work   Created|
                                    │                    |
-                                   │  ◯ a               |
-                                   │    deliberate      |
-                                   │    ly long         |
-                                   │    todo that       |
-                                   │    has to          |
-                                   │                    |
-                                   │                    |
-                                   │                    |
-                                   │ NORMAL 1/5 complete|
+                                   │ NORMAL     1/5     |
                                    │                    |

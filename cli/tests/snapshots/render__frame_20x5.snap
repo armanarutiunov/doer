@@ -3,7 +3,7 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
                     |
-    Todos    Created|
+    Todos           |
                     |
                     |
                     |

@@ -16,6 +16,12 @@ pub const SCROLL_MARGIN: usize = 5;
 pub const PREFIX_WIDTH: u16 = 4;
 
 const AGE_COLUMN: usize = 7;
+/// The text is the point of a row, so a date column is shrunk and then dropped rather
+/// than squeezing the text below this. Twelve columns is roughly two short words, which
+/// is where wrapping stops being readable.
+const MIN_TEXT_WIDTH: usize = 12;
+/// Enough for "999d", which is as wide as a real age label gets.
+const NARROW_COLUMN: usize = 4;
 const COMPLETED_COLUMN: usize = 9;
 pub const EMPTY_HINT: &str = "press 'a' to add a new todo";
 
@@ -77,10 +83,100 @@ impl Geometry {
     }
 }
 
+/// How much room the date columns get, and what the text keeps from what is left.
+///
+/// A row has to fit the content column. The Elixir version floored the text area at ten
+/// columns instead, so at anything narrower than about 110 columns with the sidebar open
+/// it built rows wider than the column and let the terminal clip the dates off the end.
+///
+/// The columns are generously padded at full width -- seven and nine, for labels that are
+/// realistically three or four characters -- so a narrow terminal shrinks them to their
+/// natural width before giving up and dropping them. Wide terminals keep the original
+/// padding, so the alignment there is unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DateColumns {
+    pub age: Option<usize>,
+    pub completed: Option<usize>,
+    pub text_width: usize,
+}
+
+impl DateColumns {
+    #[must_use]
+    pub fn fit(content_width: u16, has_completed: bool) -> Self {
+        let budget = text::to_usize(content_width).saturating_sub(text::to_usize(PREFIX_WIDTH));
+
+        // Widest arrangement first; the first one that leaves the text a workable
+        // column wins.
+        let candidates: [(Option<usize>, Option<usize>); 4] = if has_completed {
+            [
+                (Some(AGE_COLUMN), Some(COMPLETED_COLUMN)),
+                (Some(NARROW_COLUMN), Some(NARROW_COLUMN)),
+                (Some(NARROW_COLUMN), None),
+                (None, None),
+            ]
+        } else {
+            [
+                (Some(AGE_COLUMN), None),
+                (Some(NARROW_COLUMN), None),
+                (None, None),
+                (None, None),
+            ]
+        };
+
+        for (age, completed) in candidates {
+            let right = Self::right_width(age, completed);
+            let text_width = budget.saturating_sub(right);
+            if right == 0 {
+                return Self {
+                    age: None,
+                    completed: None,
+                    text_width: budget.max(1),
+                };
+            }
+            if text_width >= MIN_TEXT_WIDTH {
+                return Self {
+                    age,
+                    completed,
+                    text_width,
+                };
+            }
+        }
+        Self {
+            age: None,
+            completed: None,
+            text_width: budget.max(1),
+        }
+    }
+
+    #[must_use]
+    pub fn right_width(age: Option<usize>, completed: Option<usize>) -> usize {
+        age.map_or(0, |w| 2 + w) + completed.map_or(0, |w| 2 + w)
+    }
+
+    #[must_use]
+    pub fn width(self) -> usize {
+        Self::right_width(self.age, self.completed)
+    }
+
+    /// The header label, spaced to sit over the columns actually drawn.
+    #[must_use]
+    pub fn header_label(self) -> String {
+        match (self.age, self.completed) {
+            (Some(age), Some(completed)) => format!(
+                "{}  {}",
+                text::pad_start("Created", age),
+                text::pad_start("Completed", completed)
+            ),
+            (Some(age), None) => text::pad_start("Created", age),
+            _ => String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Row {
     Blank,
-    SectionHeader { title: String, right: &'static str },
+    SectionHeader { title: String, right: String },
     EmptyHint(&'static str),
     Todo(TodoRow),
 }
@@ -97,6 +193,9 @@ pub struct TodoRow {
     pub done: bool,
     pub age: String,
     pub completed_age: Option<String>,
+    /// Column widths the layout committed to, so the renderer pads to the same
+    /// numbers the wrapping was computed against.
+    pub columns: DateColumns,
     /// Column of the text caret on this line, when the todo is being edited.
     pub caret_col: Option<u16>,
 }
@@ -151,7 +250,7 @@ impl Layout {
         } else {
             builder.push(Row::SectionHeader {
                 title: view_title(ws, view),
-                right: "Created",
+                right: DateColumns::fit(content_width, false).header_label(),
             });
             builder.push(Row::Blank);
             if dl.active.is_empty() {
@@ -168,7 +267,7 @@ impl Layout {
             builder.push(Row::Blank);
             builder.push(Row::SectionHeader {
                 title: "Completed".into(),
-                right: "Created  Completed",
+                right: DateColumns::fit(content_width, true).header_label(),
             });
             builder.push(Row::Blank);
             let offset_base = dl.active.len();
@@ -249,7 +348,7 @@ impl Builder {
             }
             self.push(Row::SectionHeader {
                 title: section_title(ws, &bucket),
-                right: "Created",
+                right: DateColumns::fit(self.content_width, false).header_label(),
             });
             self.push(Row::Blank);
 
@@ -280,20 +379,16 @@ impl Builder {
             None
         };
 
-        // The completed section carries a second date column, so its rows wrap
-        // narrower than active ones. Wrapping here is what keeps the scroll model
-        // aware of that.
-        let right_width = 2
-            + AGE_COLUMN
-            + if completed_age.is_some() {
-                2 + COMPLETED_COLUMN
-            } else {
-                0
-            };
-        let text_width = text::to_usize(self.content_width)
-            .saturating_sub(text::to_usize(PREFIX_WIDTH))
-            .saturating_sub(right_width)
-            .max(10);
+        // The completed section carries a second date column, so its rows wrap narrower
+        // than active ones. Wrapping here is what keeps the scroll model aware of that.
+        let columns = DateColumns::fit(self.content_width, completed_age.is_some());
+        let age = if columns.age.is_some() {
+            age
+        } else {
+            String::new()
+        };
+        let completed_age = completed_age.filter(|_| columns.completed.is_some());
+        let text_width = columns.text_width;
 
         let editing = hints.editing.as_ref().filter(|(id, _, _)| *id == todo.id);
         let source = editing.map_or(todo.text.as_str(), |(_, text, _)| *text);
@@ -327,6 +422,7 @@ impl Builder {
                 done,
                 age: age.clone(),
                 completed_age: completed_age.clone(),
+                columns,
                 caret_col,
             }));
         }
@@ -467,7 +563,7 @@ mod tests {
             [
                 Row::SectionHeader {
                     title: "Todos".into(),
-                    right: "Created"
+                    right: text::pad_start("Created", AGE_COLUMN)
                 },
                 Row::Blank,
                 Row::EmptyHint(EMPTY_HINT),
@@ -491,7 +587,7 @@ mod tests {
             tail[2],
             Row::SectionHeader {
                 title: "Completed".into(),
-                right: "Created  Completed"
+                right: DateColumns::fit(WIDE.content_width(), true).header_label()
             }
         );
         assert_eq!(tail[3], Row::Blank);
@@ -677,5 +773,120 @@ mod tests {
     fn a_viewport_of_one_row_still_terminates_and_stays_in_range() {
         let offset = adjust_scroll(0, &(50..51), 100, 1);
         assert!(offset < 100);
+    }
+}
+
+#[cfg(test)]
+mod narrow_tests {
+    use super::*;
+    use crate::project::Projects;
+    use crate::todo::Todo;
+    use std::collections::HashMap;
+
+    const T0: i64 = 1_700_000_000;
+
+    fn rows_for(text: &str, done: bool, term_width: u16) -> Vec<TodoRow> {
+        let mut ws = Workspace::new(Vec::new(), Projects::default(), HashMap::new());
+        let mut todo = Todo::new(text, T0);
+        if done {
+            todo.toggle(T0);
+        }
+        ws.push_todo(&Bucket::All, todo);
+
+        let geo = Geometry::new(term_width, 40, false);
+        let dl = DisplayList::build(&ws, &ViewId::All, None);
+        Layout::build(&ws, &dl, &ViewId::All, &geo, &LayoutHints::default(), T0)
+            .rows
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Todo(todo) => Some(todo),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The whole row -- prefix, text, gap and date columns -- has to fit the content
+    /// column, or the terminal clips whatever hangs over the edge.
+    fn assert_fits(term_width: u16, done: bool) {
+        let geo = Geometry::new(term_width, 40, false);
+        let content = text::to_usize(geo.content_width());
+        for row in rows_for("a todo with several words in it", done, term_width) {
+            let used = text::to_usize(PREFIX_WIDTH) + text::width(&row.line) + row.columns.width();
+            assert!(
+                used <= content,
+                "width {term_width}: row uses {used} of {content} columns ({:?})",
+                row.line
+            );
+        }
+    }
+
+    /// Below this the renderer draws a "terminal too small" notice instead of the list,
+    /// so the row arithmetic is not asked to fit a column narrower than the checkbox.
+    const SMALLEST_USABLE: u16 = 20;
+
+    #[test]
+    fn a_row_always_fits_the_content_column() {
+        for width in SMALLEST_USABLE..=200u16 {
+            assert_fits(width, false);
+            assert_fits(width, true);
+        }
+    }
+
+    #[test]
+    fn the_date_columns_shrink_before_either_is_dropped() {
+        let wide = rows_for("short", true, 200);
+        let wide = wide.first().expect("a row").columns;
+        assert_eq!(wide.age, Some(AGE_COLUMN));
+        assert_eq!(wide.completed, Some(COMPLETED_COLUMN));
+
+        let narrow = rows_for("short", true, 52);
+        let narrow = narrow.first().expect("a row").columns;
+        assert_eq!(
+            narrow.age,
+            Some(NARROW_COLUMN),
+            "both columns survive, narrower"
+        );
+        assert_eq!(narrow.completed, Some(NARROW_COLUMN));
+    }
+
+    #[test]
+    fn the_completed_column_goes_before_the_age_column() {
+        let rows = rows_for("short", true, 40);
+        let columns = rows.first().expect("a row").columns;
+        assert_eq!(
+            columns.completed, None,
+            "the second date is the first to go"
+        );
+        assert!(columns.age.is_some(), "the age column survives longer");
+    }
+
+    /// Narrower than the renderer's own floor, but the layout must still produce a
+    /// row that fits rather than one the terminal has to clip.
+    #[test]
+    fn a_terminal_too_narrow_for_any_date_keeps_only_the_text() {
+        let rows = rows_for("short", true, 35);
+        let first = rows.first().expect("a row");
+        assert_eq!(first.columns.age, None);
+        assert_eq!(first.columns.completed, None);
+        assert!(!first.line.is_empty());
+    }
+
+    #[test]
+    fn a_header_only_advertises_the_columns_that_are_drawn() {
+        assert_eq!(DateColumns::fit(20, true).header_label(), "");
+        assert_eq!(DateColumns::fit(26, true).header_label().trim(), "Created");
+        assert_eq!(DateColumns::fit(40, false).header_label().trim(), "Created");
+        assert_eq!(
+            DateColumns::fit(200, true).header_label().trim(),
+            "Created  Completed"
+        );
+    }
+
+    #[test]
+    fn a_wide_terminal_keeps_both_date_columns() {
+        let rows = rows_for("short", true, 200);
+        let first = rows.first().expect("a row");
+        assert!(!first.age.is_empty());
+        assert!(first.completed_age.is_some());
     }
 }

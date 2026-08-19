@@ -19,7 +19,7 @@ expression: text_of(terminal.backend().buffer())
                                    │             them                           |
                                    │                                            |
                                    │                                            |
-                                   │             Completed  Created  Completed  |
+                                   │             Completed      Created         |
                                    │                                            |
                                    │                                            |
                                    │         /the                               |

@@ -59,15 +59,27 @@ pub fn render_modebar(frame: &mut Frame, area: Rect, view: &StatusView<'_>, them
         MainMode::Search | MainMode::SearchNav => ("SEARCH", theme.mode_search),
     };
     let mode = format!(" {label} ");
-    let count = format!("{}/{} completed", view.done, view.total);
-    let hint = if view.mode == MainMode::Normal && !view.show_help {
+    let want_hint = view.mode == MainMode::Normal && !view.show_help;
+
+    // The mode is the one part that always earns its space. Everything right of it is
+    // dropped when it will not fit, rather than being clipped mid-word by the terminal.
+    let width = text::to_usize(area.width);
+    let mode_width = text::width(&mode);
+    let mut count = format!("{}/{} completed", view.done, view.total);
+    if mode_width + text::width(&count) > width {
+        count = format!("{}/{}", view.done, view.total);
+    }
+    if mode_width + text::width(&count) > width {
+        count = String::new();
+    }
+    let hint = if want_hint && mode_width + text::width(&count) + 10 <= width {
         "? for help"
     } else {
         ""
     };
 
-    let remaining = text::to_usize(area.width)
-        .saturating_sub(text::width(&mode))
+    let remaining = width
+        .saturating_sub(mode_width)
         .saturating_sub(text::width(&count))
         .saturating_sub(text::width(hint));
     let left_gap = remaining / 2;

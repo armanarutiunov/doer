@@ -16,9 +16,6 @@ use doer_core::text;
 
 use crate::ui::theme::Theme;
 
-const AGE_COLUMN: usize = 7;
-const COMPLETED_COLUMN: usize = 9;
-
 /// Everything the list needs from the app, resolved once by `ui::draw`.
 pub struct ListView<'a> {
     pub layout: &'a Layout,
@@ -174,10 +171,13 @@ fn cursor_row_style(
 }
 
 fn right_column(todo: &TodoRow) -> String {
-    let mut right = format!("  {}", text::pad_start(&todo.age, AGE_COLUMN));
-    if let Some(completed) = &todo.completed_age {
+    let mut right = match todo.columns.age {
+        Some(width) => format!("  {}", text::pad_start(&todo.age, width)),
+        None => String::new(),
+    };
+    if let (Some(completed), Some(width)) = (&todo.completed_age, todo.columns.completed) {
         right.push_str("  ");
-        right.push_str(&text::pad_start(completed, COMPLETED_COLUMN));
+        right.push_str(&text::pad_start(completed, width));
     }
     right
 }
