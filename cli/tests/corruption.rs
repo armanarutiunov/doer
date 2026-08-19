@@ -5,6 +5,7 @@
 //! leaves the damaged bytes exactly as they were.
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
 use doer::store::FsStore;
@@ -332,5 +333,44 @@ fn every_reported_problem_renders_a_message_naming_the_file() {
         let text = problem.to_string();
         assert!(text.contains("all-todos.json"), "{text}");
         assert_eq!(problem.severity(), Severity::Error);
+    }
+}
+
+/// `init` creates the directory only if it is missing, so a `projects/` that exists but
+/// cannot be listed would otherwise make every project vanish with no warning at all.
+#[test]
+fn a_projects_directory_that_cannot_be_listed_is_reported_not_swallowed() {
+    let home = Home::new();
+    let projects = home.path().join("projects");
+    fs::write(
+        projects.join("0123456789abcdef.json"),
+        br#"{"id":"0123456789abcdef","index":0,"name":"work","parent_id":null,"todos":[]}"#,
+    )
+    .expect("seed a project");
+
+    let mut perms = fs::metadata(&projects).expect("metadata").permissions();
+    perms.set_mode(0o000);
+    fs::set_permissions(&projects, perms).expect("make unlistable");
+
+    let loaded = home.store().load();
+
+    let mut perms = fs::metadata(&projects).expect("metadata").permissions();
+    perms.set_mode(0o755);
+    fs::set_permissions(&projects, perms).expect("restore permissions");
+
+    // Running as root ignores the mode bits, so only assert when the OS enforced it.
+    if loaded.value.projects.is_empty() {
+        assert!(
+            loaded
+                .problems
+                .iter()
+                .any(|p| matches!(p, Problem::Unreadable { .. })),
+            "the projects went missing without a word: {:?}",
+            loaded.problems
+        );
+        assert!(
+            loaded.is_degraded(),
+            "an empty sidebar with the data still on disk is data loss, not a warning"
+        );
     }
 }

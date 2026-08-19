@@ -304,3 +304,74 @@ fn fields_from_a_newer_doer_survive_an_edit_to_the_same_todo() {
         "unknown keys keep the position they held"
     );
 }
+
+/// A sync or a hand edit can leave one id in two files. Each file's unknown fields must
+/// stay with that file: keyed by id alone, the second load overwrote the first and saving
+/// one file injected the other's keys while dropping its own.
+#[test]
+fn two_files_carrying_one_id_do_not_trade_their_unknown_fields() {
+    let home = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(home.path().join("projects")).expect("projects dir");
+    fs::write(
+        home.path().join("all-todos.json"),
+        br#"[{"id":"1111111111111111","text":"ungrouped","done":false,"created_at":1,"completed_at":null,"priority":1}]"#,
+    )
+    .expect("seed all todos");
+    fs::write(
+        home.path().join("projects/0123456789abcdef.json"),
+        br#"{"id":"0123456789abcdef","index":0,"name":"work","parent_id":null,"todos":[{"id":"1111111111111111","text":"in a project","done":false,"created_at":1,"completed_at":null,"tags":["x"]}]}"#,
+    )
+    .expect("seed project");
+
+    let store = FsStore::with_root(home.path());
+    let loaded = store.load();
+
+    store
+        .save_all_todos(&loaded.value.all_todos)
+        .expect("save all todos");
+
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_slice(&fs::read(home.path().join("all-todos.json")).expect("read"))
+            .expect("valid json");
+    let ungrouped = entries
+        .iter()
+        .find(|e| e["text"] == "ungrouped")
+        .expect("the ungrouped todo is still there");
+
+    assert_eq!(ungrouped["priority"], 1, "its own unknown field survives");
+    assert!(
+        ungrouped.get("tags").is_none(),
+        "and the project file's unknown field was not injected into it: {ungrouped}"
+    );
+}
+
+/// The fallback that keeps a cross-bucket move from losing what a todo arrived carrying.
+#[test]
+fn a_todo_moved_to_another_file_keeps_the_fields_it_arrived_with() {
+    let home = tempfile::tempdir().expect("tempdir");
+    fs::create_dir_all(home.path().join("projects")).expect("projects dir");
+    fs::write(
+        home.path().join("all-todos.json"),
+        br#"[{"id":"1111111111111111","text":"moves","done":false,"created_at":1,"completed_at":null,"priority":1}]"#,
+    )
+    .expect("seed");
+
+    let store = FsStore::with_root(home.path());
+    let moved = store.load().value.all_todos;
+
+    store
+        .save_project(&ProjectFile {
+            id: doer_core::ProjectId::from("0123456789abcdef"),
+            index: 0,
+            name: "work".into(),
+            parent_id: None,
+            todos: moved,
+        })
+        .expect("save the todo into a project file");
+
+    let raw: serde_json::Value = serde_json::from_slice(
+        &fs::read(home.path().join("projects/0123456789abcdef.json")).expect("read"),
+    )
+    .expect("valid json");
+    assert_eq!(raw["todos"][0]["priority"], 1);
+}

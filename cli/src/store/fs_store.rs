@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,10 +25,14 @@ pub struct FsStore {
     /// they held so a save puts them back untouched. Without this a single unreadable
     /// entry would either be dropped on the next save or lock the file for the session.
     unparsed: Mutex<HashMap<Target, Unparsed>>,
-    /// The original JSON of any todo that carried fields this build does not know, keyed
-    /// by id so it follows the todo between files. Re-emitting from the original — rather
-    /// than appending the extras — keeps the unknown keys in the position they held.
-    carried_fields: Mutex<HashMap<TodoId, Value>>,
+    /// The original JSON of any todo that carried fields this build does not know.
+    ///
+    /// Keyed by the file it came from as well as the id: a sync or a hand edit can leave
+    /// the same id in two files, and keying by id alone let the second load overwrite the
+    /// first, so saving one file would inject the *other* file's unknown keys and drop its
+    /// own. Re-emitting from the original object — rather than appending the extras — keeps
+    /// the unknown keys in the position they held.
+    carried_fields: Mutex<HashMap<(Target, TodoId), Value>>,
     /// The file each project was actually read from. A save writes back to exactly that
     /// path, so a file another tool named its own way keeps its name: renaming someone
     /// else's file would leave the original behind and load as a second project.
@@ -169,14 +174,26 @@ impl FsStore {
             self.mark_read_only(Target::AllTodos);
             return Vec::new();
         };
-        let (todos, unparsed) = self.split_entries(&path, raw, problems);
+        let (todos, unparsed) = self.split_entries(&Target::AllTodos, &path, raw, problems);
         self.remember_unparsed(Target::AllTodos, unparsed);
         todos
     }
 
     fn load_projects(&self, problems: &mut Vec<Problem>) -> Vec<ProjectFile> {
-        let Ok(entries) = fs::read_dir(self.projects_dir()) else {
-            return Vec::new();
+        let dir = self.projects_dir();
+        let entries = match fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => return Vec::new(),
+            Err(err) => {
+                // The directory exists but will not open -- a mode, an ACL, a stalled
+                // network mount. Every project is in there, so showing an empty app
+                // without a word would be the worst possible reading of this state.
+                problems.push(Problem::Unreadable {
+                    path: dir,
+                    detail: err.to_string(),
+                });
+                return Vec::new();
+            }
         };
         let mut paths: Vec<PathBuf> = entries
             .filter_map(Result::ok)
@@ -207,7 +224,8 @@ impl FsStore {
                 });
                 continue;
             }
-            let (todos, unparsed) = self.split_entries(&path, raw.todos, problems);
+            let target = Target::Project(raw.id.clone());
+            let (todos, unparsed) = self.split_entries(&target, &path, raw.todos, problems);
             let file = ProjectFile {
                 id: raw.id,
                 index: raw.index,
@@ -226,6 +244,7 @@ impl FsStore {
     /// carried fields this build does not know about.
     fn split_entries(
         &self,
+        target: &Target,
         path: &Path,
         raw: Vec<Value>,
         problems: &mut Vec<Problem>,
@@ -238,7 +257,7 @@ impl FsStore {
                     if has_unknown_keys(&entry)
                         && let Ok(mut map) = self.carried_fields.lock()
                     {
-                        map.insert(todo.id.clone(), entry);
+                        map.insert((target.clone(), todo.id.clone()), entry);
                     }
                     todos.push(todo);
                 }
@@ -254,10 +273,12 @@ impl FsStore {
         (todos, unparsed)
     }
 
-    fn carries_fields_for(&self, todos: &[Todo]) -> bool {
-        self.carried_fields
-            .lock()
-            .is_ok_and(|map| todos.iter().any(|t| map.contains_key(&t.id)))
+    fn carries_fields_for(&self, target: &Target, todos: &[Todo]) -> bool {
+        self.carried_fields.lock().is_ok_and(|map| {
+            todos
+                .iter()
+                .any(|t| carried_for(&map, target, &t.id).is_some())
+        })
     }
 
     /// The array a file will hold: current todos, any unknown fields they arrived with put
@@ -279,7 +300,9 @@ impl FsStore {
                 target: target.clone(),
                 source,
             })?;
-            let original = carried.as_ref().and_then(|map| map.get(&todo.id));
+            let original = carried
+                .as_ref()
+                .and_then(|map| carried_for(map, target, &todo.id));
             out.push(
                 original
                     .and_then(|original| merge_into_original(original, &encoded))
@@ -400,7 +423,7 @@ impl Store for FsStore {
         self.refuse_if_read_only(&target)?;
         let path = self.all_todos_path();
         let unparsed = self.unparsed_for(&target);
-        if unparsed.is_empty() && !self.carries_fields_for(todos) {
+        if unparsed.is_empty() && !self.carries_fields_for(&target, todos) {
             write_json(&path, &target, &todos)
         } else {
             write_json(&path, &target, &self.todo_array(todos, &unparsed, &target)?)
@@ -413,7 +436,7 @@ impl Store for FsStore {
         let path = self.project_path(&file.id);
         self.remember_file(&file.id, &path);
         let unparsed = self.unparsed_for(&target);
-        if unparsed.is_empty() && !self.carries_fields_for(&file.todos) {
+        if unparsed.is_empty() && !self.carries_fields_for(&target, &file.todos) {
             return write_json(&path, &target, file);
         }
         let out = ProjectFileOut {
@@ -534,6 +557,24 @@ struct ProjectFileOut<'a> {
     name: &'a str,
     parent_id: &'a Option<ProjectId>,
     todos: Vec<Value>,
+}
+
+/// What a todo arrived carrying, for the file now being written.
+///
+/// The file it came from wins. Falling back to another file's copy only when exactly one
+/// exists is what lets a todo moved between buckets keep its unknown fields, without ever
+/// letting two files' copies be confused for each other.
+fn carried_for<'a>(
+    map: &'a HashMap<(Target, TodoId), Value>,
+    target: &Target,
+    id: &TodoId,
+) -> Option<&'a Value> {
+    if let Some(mine) = map.get(&(target.clone(), id.clone())) {
+        return Some(mine);
+    }
+    let mut elsewhere = map.iter().filter(|((_, other), _)| other == id);
+    let only = elsewhere.next()?;
+    elsewhere.next().is_none().then_some(only.1)
 }
 
 fn has_unknown_keys(entry: &Value) -> bool {

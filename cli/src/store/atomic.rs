@@ -16,7 +16,19 @@ pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
+    sync_dir(path);
     Ok(())
+}
+
+/// The file's contents are durable once `write_and_sync` returns, but the rename that
+/// publishes them is an edit to the *directory*, and that needs its own sync or a power
+/// cut can leave the pre-save file behind — after the app has already told the user the
+/// save succeeded. Ignored on failure: the write itself is sound either way, and no
+/// filesystem worth supporting fails this while accepting the rename.
+fn sync_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let _ = File::open(parent).and_then(|dir| dir.sync_all());
+    }
 }
 
 fn write_and_sync(tmp: &Path, bytes: &[u8]) -> io::Result<()> {
