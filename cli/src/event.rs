@@ -21,6 +21,11 @@ pub enum Input {
     /// The toast with this sequence number reached its TTL. A newer toast supersedes an
     /// older one by having a different seq, so no timer ever needs cancelling.
     ToastExpire(u64),
+    /// The terminal will deliver no more input -- stdin closed, or the tty went away.
+    /// Sent explicitly rather than left to the channel disconnecting, because `Events`
+    /// holds a sender of its own for the timers, so a disconnect can never happen.
+    /// Without this the app would block in `next` forever, holding raw mode.
+    Closed,
 }
 
 pub struct Events {
@@ -40,9 +45,9 @@ impl Events {
         Self { rx, tx }
     }
 
-    /// Blocks until something happens. An `Err` means every sender is gone, which the
-    /// caller must treat as quit — otherwise the app sits in a dead loop holding a live
-    /// terminal, which looks exactly like a hang.
+    /// Blocks until something happens. `Input::Closed` is how the end of input arrives;
+    /// an `Err` here would mean every sender including our own has gone, which cannot
+    /// happen, and is treated the same way for safety.
     pub fn next(&self) -> Result<Input, RecvError> {
         self.rx.recv()
     }
@@ -72,7 +77,10 @@ fn spawn_reader(tx: Sender<Input>) {
                 Ok(Event::Paste(text)) => Input::Paste(text),
                 Ok(Event::Resize(w, h)) => Input::Resize(w, h),
                 Ok(_) => continue,
-                Err(_) => return,
+                Err(_) => {
+                    let _ = tx.send(Input::Closed);
+                    return;
+                }
             };
             if tx.send(input).is_err() {
                 return;
