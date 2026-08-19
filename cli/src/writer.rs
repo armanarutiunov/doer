@@ -167,15 +167,11 @@ impl Worker {
                     due = None;
                     drop(ack);
                 }
-                Ok(Message::Shutdown) => {
-                    self.write_all(&mut pending, &mut deletes);
-                    return;
-                }
                 Err(RecvTimeoutError::Timeout) => {
                     self.write_all(&mut pending, &mut deletes);
                     due = None;
                 }
-                Err(RecvTimeoutError::Disconnected) => {
+                Ok(Message::Shutdown) | Err(RecvTimeoutError::Disconnected) => {
                     self.write_all(&mut pending, &mut deletes);
                     return;
                 }

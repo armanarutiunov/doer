@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 //! The save thread is the one piece of concurrency in the app, so its exit paths are
 //! tested rather than reasoned about: a shutdown that never returns leaves the terminal
 //! in raw mode with no way out but killing it.
