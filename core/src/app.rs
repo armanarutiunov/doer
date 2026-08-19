@@ -811,6 +811,71 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
     effects
 }
 
+/// One todo as the undo message cares about it.
+struct Placed {
+    id: TodoId,
+    bucket: Bucket,
+    text: String,
+    done: bool,
+}
+
+fn placed(ws: &Workspace) -> Vec<Placed> {
+    ws.buckets_in_display_order()
+        .into_iter()
+        .flat_map(|bucket| {
+            ws.todos(&bucket)
+                .iter()
+                .map(|todo| Placed {
+                    id: todo.id.clone(),
+                    bucket: bucket.clone(),
+                    text: todo.text.clone(),
+                    done: todo.done,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Names the change that took `from` to `to`, read from the difference itself rather than
+/// from a label recorded when it was made. There is no such label to record — a snapshot is
+/// the whole workspace — and a name derived from the diff cannot disagree with the states it
+/// describes. `None` when nothing recognisable differs, which leaves a bare message rather
+/// than risking a wrong one.
+fn describe_change(from: &Workspace, to: &Workspace) -> Option<&'static str> {
+    if project_ids(from) != project_ids(to) {
+        return Some("project");
+    }
+
+    let (then, now) = (placed(from), placed(to));
+    match then.len().cmp(&now.len()) {
+        std::cmp::Ordering::Less => return Some("add"),
+        std::cmp::Ordering::Greater => return Some("delete"),
+        std::cmp::Ordering::Equal => {}
+    }
+
+    let paired = || {
+        now.iter()
+            .filter_map(|a| then.iter().find(|b| b.id == a.id).map(|b| (a, b)))
+    };
+    if paired().count() != now.len() {
+        // Same number of todos, different ones: a delete and an add in one step.
+        return Some("change");
+    }
+    if paired().any(|(a, b)| a.done != b.done) {
+        return Some("toggle");
+    }
+    if paired().any(|(a, b)| a.text != b.text) {
+        return Some("edit");
+    }
+    if paired().any(|(a, b)| a.bucket != b.bucket) {
+        return Some("move");
+    }
+    if now.iter().map(|p| &p.id).ne(then.iter().map(|p| &p.id)) {
+        return Some("reorder");
+    }
+    None
+}
+
 /// The first locked bucket whose contents `target` would actually change. Buckets the
 /// restore leaves identical are no reason to refuse it.
 fn locked_difference(current: &Workspace, target: &Workspace) -> Option<Target> {
@@ -1128,9 +1193,23 @@ fn undo(state: &mut AppState, backwards: bool) -> Vec<Effect> {
         };
         return vec![Effect::Toast(state.new_toast(message, ToastLevel::Info))];
     };
+
+    // Named after the change itself, so the two directions read the same way: the
+    // original edit ran older -> newer, which is snapshot -> current for an undo and
+    // current -> snapshot for a redo.
+    let (verb, from, to) = if backwards {
+        ("undo", &snapshot.ws, &state.ws)
+    } else {
+        ("redo", &state.ws, &snapshot.ws)
+    };
+    let message = match describe_change(from, to) {
+        Some(change) => format!("-- {verb}: {change} --"),
+        None => format!("-- {verb} --"),
+    };
+
     state.restore(snapshot);
     state.resolve_cursor(ResolveCursor::ById, None);
-    Vec::new()
+    vec![Effect::Toast(state.new_toast(message, ToastLevel::Info))]
 }
 
 fn reduce_sidebar(state: &mut AppState, action: SidebarAction) -> Vec<Effect> {

@@ -1217,3 +1217,86 @@ fn undo_of_a_change_elsewhere_is_allowed_while_a_bucket_is_locked() {
     );
     assert_eq!(state.ws.todos(&Bucket::Project(project)).len(), 1);
 }
+
+// --- undo says what it undid ---
+
+fn infos(effects: &[Effect]) -> Vec<String> {
+    effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Toast(toast) if toast.level == ToastLevel::Info => Some(toast.text.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn undo_message(state: &mut AppState) -> String {
+    infos(&send(state, &A::Undo)).join(",")
+}
+
+#[test]
+fn undo_names_the_change_it_reverses() {
+    let mut state = app(&["a", "b"]);
+    send(&mut state, &A::DeleteTodo);
+    assert_eq!(undo_message(&mut state), "-- undo: delete --");
+
+    send(&mut state, &A::ToggleTodo);
+    assert_eq!(undo_message(&mut state), "-- undo: toggle --");
+
+    send(&mut state, &A::Move(Dir::Down));
+    assert_eq!(undo_message(&mut state), "-- undo: reorder --");
+
+    send(&mut state, &A::EditTodo);
+    type_text(&mut state, " more");
+    send(&mut state, &A::ConfirmEdit);
+    assert_eq!(undo_message(&mut state), "-- undo: edit --");
+
+    send(&mut state, &A::AddTodo);
+    type_text(&mut state, "fresh");
+    send(&mut state, &A::ConfirmEdit);
+    assert_eq!(undo_message(&mut state), "-- undo: add --");
+}
+
+#[test]
+fn undo_of_a_cross_section_reassignment_says_it_moved() {
+    let (mut state, _) = app_with_project(&["loose"], &["owned"]);
+    send(&mut state, &A::Move(Dir::Down));
+
+    assert_eq!(undo_message(&mut state), "-- undo: move --");
+}
+
+#[test]
+fn undo_of_a_project_change_says_project() {
+    let mut state = app(&[]);
+    state.pane = Pane::Sidebar;
+    send(&mut state, &A::Sidebar(SidebarAction::AddProject));
+    type_sidebar(&mut state, "Errands");
+    send(&mut state, &A::Sidebar(SidebarAction::ConfirmEdit));
+
+    assert_eq!(undo_message(&mut state), "-- undo: project --");
+}
+
+#[test]
+fn redo_uses_its_own_verb() {
+    let mut state = app(&["a", "b"]);
+    send(&mut state, &A::DeleteTodo);
+    send(&mut state, &A::Undo);
+
+    assert_eq!(
+        infos(&send(&mut state, &A::Redo)),
+        ["-- redo: delete --"],
+        "redoing a delete deletes again, so the name describes the change either way"
+    );
+}
+
+#[test]
+fn a_refused_undo_reports_the_lock_rather_than_a_success() {
+    let mut state = app(&["a", "b"]);
+    send(&mut state, &A::DeleteTodo);
+    state.ws.mark_read_only(Bucket::All);
+
+    let effects = send(&mut state, &A::Undo);
+
+    assert!(infos(&effects).is_empty(), "nothing was undone");
+    assert_eq!(warnings(&effects).len(), 1);
+}
