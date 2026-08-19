@@ -11,11 +11,10 @@ expression: text_of(terminal.backend().buffer())
                                    │                                                                |
                                    │                 # Work                     Created             |
                                    │                                                                |
-                                   │               ◯ a deliberately long todo       12d             |
-                                   │                 that has to wrap across                        |
-                                   │                 more than one line to                          |
-                                   │                 prove the scroll model                         |
-                                   │                 counts them                                    |
+                                   │               ◯ a deliberately long todo that  12d             |
+                                   │                 has to wrap across more than                   |
+                                   │                 one line to prove the scroll                   |
+                                   │                 model counts them                              |
                                    │                                                                |
                                    │                                                                |
                                    │                 # Work / Deep              Created             |
@@ -25,7 +24,8 @@ expression: text_of(terminal.backend().buffer())
                                    │                                                                |
                                    │                 Completed       Created  Completed             |
                                    │                                                                |
-                                   │               ◉ ship the port       30d         2d             |
+                                   │               ◉ ship the port              30d  2d             |
+                                   │                                                                |
                                    │                                                                |
                                    │                                                                |
                                    │                                                                |

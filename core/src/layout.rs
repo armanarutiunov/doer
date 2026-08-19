@@ -20,8 +20,8 @@ const AGE_COLUMN: usize = 7;
 /// than squeezing the text below this. Twelve columns is roughly two short words, which
 /// is where wrapping stops being readable.
 const MIN_TEXT_WIDTH: usize = 12;
-/// Enough for "999d", which is as wide as a real age label gets.
-const NARROW_COLUMN: usize = 4;
+/// A column never shrinks below this, so a label always has room.
+const MIN_COLUMN: usize = 2;
 const COMPLETED_COLUMN: usize = 9;
 pub const EMPTY_HINT: &str = "press 'a' to add a new todo";
 
@@ -100,38 +100,55 @@ pub struct DateColumns {
     pub text_width: usize,
 }
 
-impl DateColumns {
-    #[must_use]
-    pub fn fit(content_width: u16, has_completed: bool) -> Self {
-        let budget = text::to_usize(content_width).saturating_sub(text::to_usize(PREFIX_WIDTH));
+/// The widest date labels in a section, which is what its columns are sized to.
+///
+/// Measured across every todo in the section rather than the visible rows: sizing from
+/// what is on screen would change the column width as the user scrolls, shifting the
+/// whole list sideways underneath them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DateWidths {
+    pub age: usize,
+    pub completed: usize,
+}
 
-        // Widest arrangement first; the first one that leaves the text a workable
-        // column wins.
-        let candidates: [(Option<usize>, Option<usize>); 4] = if has_completed {
+impl DateWidths {
+    fn observe(&mut self, age: &str, completed: Option<&str>) {
+        self.age = self.age.max(text::width(age));
+        if let Some(completed) = completed {
+            self.completed = self.completed.max(text::width(completed));
+        }
+    }
+}
+
+impl DateColumns {
+    /// Sizes the date columns to the labels a section actually holds.
+    ///
+    /// The columns are capped at the widths the Elixir build used, so a row can never
+    /// grow wider than it was there, and floored so a label always fits. Nothing before
+    /// `1000d` reaches the cap.
+    #[must_use]
+    pub fn fit(content_width: u16, widths: DateWidths, has_completed: bool) -> Self {
+        let budget = text::to_usize(content_width).saturating_sub(text::to_usize(PREFIX_WIDTH));
+        let age = widths.age.clamp(MIN_COLUMN, AGE_COLUMN);
+        let completed = widths.completed.clamp(MIN_COLUMN, COMPLETED_COLUMN);
+
+        // Widest arrangement first; the first one that leaves the text a workable column
+        // wins.
+        let candidates: [(Option<usize>, Option<usize>); 3] = if has_completed {
             [
-                (Some(AGE_COLUMN), Some(COMPLETED_COLUMN)),
-                (Some(NARROW_COLUMN), Some(NARROW_COLUMN)),
-                (Some(NARROW_COLUMN), None),
+                (Some(age), Some(completed)),
+                (Some(age), None),
                 (None, None),
             ]
         } else {
-            [
-                (Some(AGE_COLUMN), None),
-                (Some(NARROW_COLUMN), None),
-                (None, None),
-                (None, None),
-            ]
+            [(Some(age), None), (None, None), (None, None)]
         };
 
         for (age, completed) in candidates {
             let right = Self::right_width(age, completed);
             let text_width = budget.saturating_sub(right);
             if right == 0 {
-                return Self {
-                    age: None,
-                    completed: None,
-                    text_width: budget.max(1),
-                };
+                break;
             }
             if text_width >= MIN_TEXT_WIDTH {
                 return Self {
@@ -243,6 +260,8 @@ impl Layout {
             spans: HashMap::new(),
             order: Vec::new(),
             content_width,
+            active: section_widths(&dl.active, false, now),
+            completed: section_widths(&dl.completed, true, now),
         };
 
         if dl.sectioned {
@@ -250,7 +269,7 @@ impl Layout {
         } else {
             builder.push(Row::SectionHeader {
                 title: view_title(ws, view),
-                right: DateColumns::fit(content_width, false).header_label(),
+                right: DateColumns::fit(content_width, builder.active, false).header_label(),
             });
             builder.push(Row::Blank);
             if dl.active.is_empty() {
@@ -267,7 +286,7 @@ impl Layout {
             builder.push(Row::Blank);
             builder.push(Row::SectionHeader {
                 title: "Completed".into(),
-                right: DateColumns::fit(content_width, true).header_label(),
+                right: DateColumns::fit(content_width, builder.completed, true).header_label(),
             });
             builder.push(Row::Blank);
             let offset_base = dl.active.len();
@@ -316,6 +335,10 @@ struct Builder {
     spans: HashMap<TodoId, Range<usize>>,
     order: Vec<TodoId>,
     content_width: u16,
+    /// Sized independently per section: the active block has one date column and the
+    /// completed block has two, so they were never the same measurement.
+    active: DateWidths,
+    completed: DateWidths,
 }
 
 impl Builder {
@@ -350,7 +373,7 @@ impl Builder {
             }
             self.push(Row::SectionHeader {
                 title: section_title(ws, &bucket),
-                right: DateColumns::fit(self.content_width, false).header_label(),
+                right: DateColumns::fit(self.content_width, self.active, false).header_label(),
             });
             self.push(Row::Blank);
 
@@ -383,7 +406,8 @@ impl Builder {
 
         // The completed section carries a second date column, so its rows wrap narrower
         // than active ones. Wrapping here is what keeps the scroll model aware of that.
-        let columns = DateColumns::fit(self.content_width, completed_age.is_some());
+        let widths = if done { self.completed } else { self.active };
+        let columns = DateColumns::fit(self.content_width, widths, completed_age.is_some());
         let age = if columns.age.is_some() {
             age
         } else {
@@ -430,6 +454,24 @@ impl Builder {
         self.spans.insert(todo.id.clone(), start..self.rows.len());
         self.order.push(todo.id.clone());
     }
+}
+
+/// The widest labels a section will draw, gathered before any row is built.
+fn section_widths(entries: &[crate::display::Entry<'_>], done: bool, now: i64) -> DateWidths {
+    let mut widths = DateWidths::default();
+    for entry in entries {
+        let age = format!("{}d", entry.todo.age_days(now));
+        let completed = if done {
+            entry
+                .todo
+                .completed_days(now)
+                .map(|days| format!("{days}d"))
+        } else {
+            None
+        };
+        widths.observe(&age, completed.as_deref());
+    }
+    widths
 }
 
 fn view_title(ws: &Workspace, view: &ViewId) -> String {
@@ -566,7 +608,7 @@ mod tests {
             [
                 Row::SectionHeader {
                     title: "Todos".into(),
-                    right: text::pad_start("Created", AGE_COLUMN)
+                    right: text::pad_start("Created", 2)
                 },
                 Row::Blank,
                 Row::EmptyHint(EMPTY_HINT),
@@ -590,7 +632,15 @@ mod tests {
             tail[2],
             Row::SectionHeader {
                 title: "Completed".into(),
-                right: DateColumns::fit(WIDE.content_width(), true).header_label()
+                right: DateColumns::fit(
+                    WIDE.content_width(),
+                    DateWidths {
+                        age: 2,
+                        completed: 2
+                    },
+                    true
+                )
+                .header_label()
             }
         );
         assert_eq!(tail[3], Row::Blank);
@@ -836,25 +886,45 @@ mod narrow_tests {
     }
 
     #[test]
-    fn the_date_columns_shrink_before_either_is_dropped() {
-        let wide = rows_for("short", true, 200);
-        let wide = wide.first().expect("a row").columns;
-        assert_eq!(wide.age, Some(AGE_COLUMN));
-        assert_eq!(wide.completed, Some(COMPLETED_COLUMN));
+    fn a_column_is_sized_to_the_labels_the_section_holds() {
+        // "0d" everywhere, so both columns sit at the floor rather than the old pads.
+        let rows = rows_for("short", true, 200);
+        let columns = rows.first().expect("a row").columns;
+        assert_eq!(columns.age, Some(MIN_COLUMN));
+        assert_eq!(columns.completed, Some(MIN_COLUMN));
+    }
 
-        let narrow = rows_for("short", true, 52);
-        let narrow = narrow.first().expect("a row").columns;
-        assert_eq!(
-            narrow.age,
-            Some(NARROW_COLUMN),
-            "both columns survive, narrower"
-        );
-        assert_eq!(narrow.completed, Some(NARROW_COLUMN));
+    #[test]
+    fn a_column_never_grows_past_the_width_the_elixir_build_used() {
+        let widths = DateWidths {
+            age: 99,
+            completed: 99,
+        };
+        let columns = DateColumns::fit(200, widths, true);
+        assert_eq!(columns.age, Some(AGE_COLUMN));
+        assert_eq!(columns.completed, Some(COMPLETED_COLUMN));
+    }
+
+    #[test]
+    fn one_old_todo_widens_the_column_for_its_whole_section() {
+        let mut ws = Workspace::new(Vec::new(), Projects::default(), HashMap::new());
+        ws.push_todo(&Bucket::All, Todo::new("recent", T0));
+        ws.push_todo(&Bucket::All, Todo::new("ancient", T0 - 400 * 86_400));
+
+        let geo = Geometry::new(200, 40, false);
+        let dl = DisplayList::build(&ws, &ViewId::All, None);
+        let layout = Layout::build(&ws, &dl, &ViewId::All, &geo, &LayoutHints::default(), T0);
+        for row in layout.rows.iter().filter_map(|row| match row {
+            Row::Todo(todo) => Some(todo),
+            _ => None,
+        }) {
+            assert_eq!(row.columns.age, Some(4), "sized for 400d, not for 0d");
+        }
     }
 
     #[test]
     fn the_completed_column_goes_before_the_age_column() {
-        let rows = rows_for("short", true, 40);
+        let rows = rows_for("short", true, 34);
         let columns = rows.first().expect("a row").columns;
         assert_eq!(
             columns.completed, None,
@@ -867,7 +937,7 @@ mod narrow_tests {
     /// row that fits rather than one the terminal has to clip.
     #[test]
     fn a_terminal_too_narrow_for_any_date_keeps_only_the_text() {
-        let rows = rows_for("short", true, 35);
+        let rows = rows_for("short", true, 19);
         let first = rows.first().expect("a row");
         assert_eq!(first.columns.age, None);
         assert_eq!(first.columns.completed, None);
@@ -876,11 +946,21 @@ mod narrow_tests {
 
     #[test]
     fn a_header_only_advertises_the_columns_that_are_drawn() {
-        assert_eq!(DateColumns::fit(20, true).header_label(), "");
-        assert_eq!(DateColumns::fit(26, true).header_label().trim(), "Created");
-        assert_eq!(DateColumns::fit(40, false).header_label().trim(), "Created");
+        let narrow = DateWidths {
+            age: 2,
+            completed: 2,
+        };
+        assert_eq!(DateColumns::fit(18, narrow, true).header_label(), "");
         assert_eq!(
-            DateColumns::fit(200, true).header_label().trim(),
+            DateColumns::fit(22, narrow, true).header_label().trim(),
+            "Created"
+        );
+        assert_eq!(
+            DateColumns::fit(40, narrow, false).header_label().trim(),
+            "Created"
+        );
+        assert_eq!(
+            DateColumns::fit(200, narrow, true).header_label().trim(),
             "Created  Completed"
         );
     }

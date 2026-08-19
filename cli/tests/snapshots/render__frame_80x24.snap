@@ -6,21 +6,21 @@ expression: text_of(terminal.backend().buffer())
                                    │             Todos          Created         |
   Projects                         │                                            |
                                    │           ◯ buy milk            1d         |
-  # Work                           │           ◯ call the            5d         |
-    # Deep                         │             plumber                        |
-                                   │                                            |
+  # Work                           │           ◯ call the plumber    5d         |
+    # Deep                         │                                            |
                                    │                                            |
                                    │             # Work         Created         |
                                    │                                            |
-                                   │           ◯ a                  12d         |
-                                   │             deliberately                   |
-                                   │             long todo                      |
-                                   │             that has to                    |
-                                   │             wrap across                    |
-                                   │             more than one                  |
-                                   │             line to prove                  |
-                                   │             the scroll                     |
-                                   │             model counts                   |
+                                   │           ◯ a deliberately     12d         |
+                                   │             long todo that                 |
+                                   │             has to wrap                    |
+                                   │             across more than               |
+                                   │             one line to prove              |
+                                   │             the scroll model               |
+                                   │             counts them                    |
+                                   │                                            |
+                                   │                                            |
+                                   │             # Work / Deep  Created         |
                                    │                                            |
                                    │                                            |
                                    │                                            |
