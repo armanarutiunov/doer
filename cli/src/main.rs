@@ -14,7 +14,7 @@ use doer::store::FsStore;
 use doer::term::{self, TerminalGuard};
 use doer::ui;
 use doer::ui::theme::{ColorDepth, Theme};
-use doer::writer::{Job, Saver};
+use doer::writer::{Job, Report, Saver};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -104,15 +104,17 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
-        // A write that failed has to say so; the domain state is untouched, so the
-        // file stays dirty and the next edit retries it.
-        let failures: Vec<_> = saver.errors().collect();
-        if failures.is_empty() {
-            app.save_succeeded();
-        } else {
-            for error in &failures {
-                let effect = app.save_failed(error);
-                apply(&effect, &app, &saver, &events);
+        // A write that failed has to say so; the domain state is untouched, so the file
+        // stays dirty and the next edit retries it. A standing failure is cleared only by
+        // a write that actually got through -- not by the next keystroke, or the user
+        // could quit on a stale reassurance.
+        for report in saver.reports().collect::<Vec<_>>() {
+            match report {
+                Report::Wrote => app.save_succeeded(),
+                Report::Failed(error) => {
+                    let effect = app.save_failed(&error);
+                    apply(&effect, &app, &saver, &events);
+                }
             }
             dirty = true;
         }

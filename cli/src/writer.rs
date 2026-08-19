@@ -28,9 +28,17 @@ enum Message {
     Flush(SyncSender<()>),
 }
 
+/// What the thread reports back about a write it attempted. Successes matter as much
+/// as failures: a standing "save failed" message must only be cleared by a write that
+/// actually got through, not by the next keystroke.
+pub enum Report {
+    Wrote,
+    Failed(StoreError),
+}
+
 pub struct Saver {
     tx: Sender<Message>,
-    errors: Receiver<StoreError>,
+    reports: Receiver<Report>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -52,17 +60,17 @@ impl Saver {
     #[must_use]
     pub fn start(store: Box<dyn Store>) -> Self {
         let (tx, rx) = mpsc::channel();
-        let (error_tx, errors) = mpsc::channel();
+        let (report_tx, reports) = mpsc::channel();
         let handle = thread::spawn(move || {
             let worker = Worker {
                 store,
-                errors: error_tx,
+                reports: report_tx,
             };
             worker.run(&rx);
         });
         Self {
             tx,
-            errors,
+            reports,
             handle: Some(handle),
         }
     }
@@ -78,10 +86,10 @@ impl Saver {
         let _ = self.tx.send(Message::Work(job));
     }
 
-    /// Save failures the thread has reported since the last check. Draining rather
-    /// than blocking keeps this callable from the event loop.
-    pub fn errors(&self) -> impl Iterator<Item = StoreError> + '_ {
-        self.errors.try_iter()
+    /// What the thread has reported since the last check. Draining rather than blocking
+    /// keeps this callable from the event loop.
+    pub fn reports(&self) -> impl Iterator<Item = Report> + '_ {
+        self.reports.try_iter()
     }
 
     /// Writes everything still queued. Bounded, because a wedged filesystem must not
@@ -110,7 +118,7 @@ impl Drop for Saver {
 
 struct Worker {
     store: Box<dyn Store>,
-    errors: Sender<StoreError>,
+    reports: Sender<Report>,
 }
 
 impl Worker {
@@ -160,11 +168,18 @@ impl Worker {
         }
     }
 
+    fn report(&self, result: Result<(), StoreError>) {
+        let _ = self.reports.send(match result {
+            Ok(()) => Report::Wrote,
+            Err(error) => Report::Failed(error),
+        });
+    }
+
     fn write_all(&self, pending: &mut HashMap<Target, Job>, deletes: &mut Vec<ProjectId>) {
+        // Deletes go first, so undoing a delete -- which queues a write for the same
+        // file -- ends with the file present rather than removed.
         for id in deletes.drain(..) {
-            if let Err(error) = self.store.delete_project(&id) {
-                let _ = self.errors.send(error);
-            }
+            self.report(self.store.delete_project(&id));
         }
         for (_, job) in pending.drain() {
             let result = match job {
@@ -172,9 +187,7 @@ impl Worker {
                 Job::Project(file) => self.store.save_project(&file),
                 Job::Delete(id) => self.store.delete_project(&id),
             };
-            if let Err(error) = result {
-                let _ = self.errors.send(error);
-            }
+            self.report(result);
         }
     }
 }
