@@ -69,7 +69,7 @@ static LEFT: &[Section] = &[
             ("\\", "toggle sidebar"),
             ("tab", "switch focus"),
             ("?", "help"),
-            ("q", "quit"),
+            ("q ctrl+c", "quit"),
         ],
     },
 ];
@@ -84,6 +84,8 @@ static RIGHT: &[Section] = &[
             ("home end", "start/end of line"),
             ("ctrl+w", "delete word back"),
             ("ctrl+u", "delete to start"),
+            ("delete", "delete at caret"),
+            ("paste", "inserted as text"),
         ],
     },
     Section {
@@ -105,6 +107,7 @@ static RIGHT: &[Section] = &[
             ("e i", "rename project"),
             ("d", "delete project"),
             ("J K", "reorder projects"),
+            ("y n", "answer Delete?"),
         ],
     },
 ];

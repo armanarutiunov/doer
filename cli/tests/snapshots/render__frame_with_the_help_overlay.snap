@@ -11,24 +11,24 @@ expression: text_of(terminal.backend().buffer())
                    a          add todo             home end   start/end of line                     |
                    e i        edit todo            ctrl+w     delete word back      ted             |
                    d          delete todo          ctrl+u     delete to start                       |
-                   space      toggle done                                           12d             |
-                   J K        reorder todo         Search                                           |
+                   space      toggle done          delete     delete at caret       12d             |
+                   J K        reorder todo         paste      inserted as text                      |
                    v          visual mode                                                           |
-                   /          search               type       filter todos                          |
-                   u ctrl+r   undo / redo          enter      browse matches                        |
-                   h ←        focus sidebar        j k        next/previous match                   |
+                   /          search               Search                                           |
+                   u ctrl+r   undo / redo                                                           |
+                   h ←        focus sidebar        type       filter todos                          |
+                                                   enter      browse matches                        |
+                   Visual                          j k        next/previous match   ted             |
                                                    esc        cancel search                         |
-                   Visual                                                           ted             |
-                                                   Sidebar                                          |
                    j k ↓ ↑    extend selection                                       3d             |
-                   J K        reorder selected     j k ↓ ↑    navigate                              |
-                   d          delete selected      enter l →  select project                        |
-                   space      toggle selected      a          add project           ted             |
-                   esc        exit visual          s          add subproject                        |
-                                                   e i        rename project         2d             |
-                   Global                          d          delete project                        |
-                                                   J K        reorder projects                      |
-                   \          toggle sidebar                                                        |
-                   tab        switch focus                                                          |
-                   ?          help                                                                  |
-                   q          quit                                                                  |
+                   J K        reorder selected     Sidebar                                          |
+                   d          delete selected                                                       |
+                   space      toggle selected      j k ↓ ↑    navigate              ted             |
+                   esc        exit visual          enter l →  select project                        |
+                                                   a          add project            2d             |
+                   Global                          s          add subproject                        |
+                                                   e i        rename project                        |
+                   \          toggle sidebar       d          delete project                        |
+                   tab        switch focus         J K        reorder projects                      |
+                   ?          help                 y n        answer Delete?                        |
+                   q ctrl+c   quit                                                                  |

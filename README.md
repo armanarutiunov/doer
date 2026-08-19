@@ -40,6 +40,9 @@ Available whenever neither pane is mid-edit.
 
 While the help overlay is open, only `?` and `escape` do anything — both close it.
 
+`q` saves before it exits. If that save fails it says so and stays open; pressing `q`
+again then quits anyway, losing the unsaved edits.
+
 ### Normal mode
 
 | Key | Action |
@@ -61,6 +64,10 @@ While the help overlay is open, only `?` and `escape` do anything — both close
 ### Insert mode
 
 Entered by `a`, `e` or `i`. Any character is accepted, including non-ASCII.
+
+Pasting inserts the text as text. A todo is one line, so line breaks and tabs in a
+pasted block become spaces. Outside a text field a paste is ignored entirely — pasted
+text is never read as a run of keybindings.
 
 | Key | Action |
 |-----|--------|
@@ -106,6 +113,25 @@ Search accepts the same editing keys as insert mode.
 Renaming uses the same editing keys as insert mode. Deleting a project also deletes its
 subprojects; if any of them still holds an uncompleted todo, the row asks `Delete? y/n`
 first. Deletes are undoable.
+
+## Display
+
+A row shows a checkbox, the todo text, and the age of the todo in whole days. Completed
+todos move to their own section below the active ones, struck through, with a second
+column for how long ago they were completed. In the All Todos view, todos are grouped
+under a header per project.
+
+The layout adapts to the terminal, so a narrow window shows less than a wide one:
+
+- The date columns shrink to their natural width, then disappear, before the todo text is
+  allowed to get narrower than about twelve columns. The text is the point of the row.
+- The mode bar shortens the completed count and drops the `? for help` hint rather than
+  letting them be cut mid-word.
+- The sidebar hides itself when the main column could not otherwise keep its minimum
+  width. Toggling it with `\` still works; it reappears when there is room.
+
+Long todos wrap. A project name too long for the sidebar is truncated, but while you are
+renaming it the row scrolls horizontally so the text stays visible as you type.
 
 ## Data
 
