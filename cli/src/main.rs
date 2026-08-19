@@ -190,9 +190,10 @@ fn actions_for(input: Input, app: &AppState) -> Vec<Action> {
             .and_then(|press| input::map(app.input_context(), press))
             .into_iter()
             .collect(),
-        // A paste is one edit, not one keystroke per character, so it arrives as the
-        // text it is and the editor decides what to do with each char.
-        Input::Paste(text) => text
+        // Only a text field accepts a paste. Anywhere else every character would be read
+        // as a keybinding, so pasting "add docs" into the list would delete a todo, undo
+        // an edit and quit -- from one stray key combination.
+        Input::Paste(text) if accepts_text(app) => paste_text(&text)
             .chars()
             .filter_map(|ch| {
                 input::map(
@@ -204,18 +205,31 @@ fn actions_for(input: Input, app: &AppState) -> Vec<Action> {
                 )
             })
             .collect(),
+        Input::Paste(_) => Vec::new(),
         Input::Resize(width, height) => vec![Action::Resize(width, height)],
         Input::DayChanged => vec![Action::DayChanged],
         Input::ToastExpire(seq) => vec![Action::ToastExpire(seq)],
     }
 }
 
-/// Whether a paste would be read as text rather than as a run of keybindings.
+/// Whether a paste would be read as text rather than as a run of keybindings. The help
+/// overlay swallows keys, so it swallows a paste too.
 fn accepts_text(app: &AppState) -> bool {
-    matches!(
-        app.focus(),
-        Focus::Main(MainMode::Insert | MainMode::Search) | Focus::Sidebar(SidebarMode::Insert)
-    )
+    !app.help
+        && matches!(
+            app.focus(),
+            Focus::Main(MainMode::Insert | MainMode::Search) | Focus::Sidebar(SidebarMode::Insert)
+        )
+}
+
+/// A todo is one line, so the line breaks in a multi-line paste become spaces. Dropping
+/// them instead would run the last word of one line into the first of the next, and a
+/// terminal may deliver one paste as several chunks, so there is no reliable "first line"
+/// to keep.
+fn paste_text(text: &str) -> String {
+    text.chars()
+        .map(|ch| if ch.is_control() { ' ' } else { ch })
+        .collect()
 }
 
 /// Shift is dropped deliberately: the character already carries the case, and terminals
