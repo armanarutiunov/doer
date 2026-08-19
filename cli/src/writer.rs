@@ -19,6 +19,10 @@ use crate::term::PanicFlush;
 /// How long a file stays queued while more edits arrive.
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
+/// Bound for the unwind path, where nobody chose a timeout. The queue has usually been
+/// flushed already; this only covers a write still in progress.
+const DROP_STOP_TIMEOUT: Duration = Duration::from_secs(2);
+
 pub enum Job {
     AllTodos(Vec<Todo>),
     Project(Box<ProjectFile>),
@@ -45,8 +49,13 @@ pub enum Report {
 pub struct Saver {
     tx: Sender<Message>,
     reports: Receiver<Report>,
+    /// Kept only to know whether the thread has already been told to stop, and to detach
+    /// it deliberately when the bounded wait gives up rather than joining it.
     handle: Option<JoinHandle<()>>,
     alive: Arc<AtomicBool>,
+    /// Closes when the thread returns. Waiting on this rather than joining is what keeps
+    /// the wait bounded: `JoinHandle::join` cannot time out.
+    stopped: Receiver<()>,
 }
 
 /// Cloneable handle for the panic hook, which cannot reach the `Saver` itself.
@@ -75,10 +84,12 @@ impl Saver {
     pub fn start(store: Box<dyn Store>) -> Self {
         let (tx, rx) = mpsc::channel();
         let (report_tx, reports) = mpsc::channel();
+        let (stopped_tx, stopped) = mpsc::channel::<()>();
         let alive = Arc::new(AtomicBool::new(true));
         let handle = thread::spawn({
             let alive = Arc::clone(&alive);
             move || {
+                let _stopped = stopped_tx;
                 let worker = Worker {
                     store,
                     reports: report_tx,
@@ -94,6 +105,7 @@ impl Saver {
             reports,
             handle: Some(handle),
             alive,
+            stopped,
         }
     }
 
@@ -149,23 +161,32 @@ impl Saver {
     #[must_use]
     pub fn shutdown(mut self, timeout: Duration) -> bool {
         let flushed = self.flush(timeout);
-        let _ = self.tx.send(Message::Shutdown);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        self.stop(timeout);
         flushed
+    }
+
+    /// Asks the thread to finish and waits, bounded, for it to do so.
+    ///
+    /// The wait is on the thread's own channel rather than `JoinHandle::join`, which
+    /// cannot time out: a write wedged on an unresponsive filesystem would otherwise hold
+    /// the process open forever, which is the failure this whole timeout exists to avoid.
+    /// Abandoning a thread mid-write is safe because every write goes to a temp file and
+    /// is renamed into place, so an interrupted one leaves the original file untouched.
+    fn stop(&mut self, timeout: Duration) {
+        if self.handle.take().is_none() {
+            return;
+        }
+        let _ = self.tx.send(Message::Shutdown);
+        let _ = self.stopped.recv_timeout(timeout);
     }
 }
 
 impl Drop for Saver {
     /// Only reached when `shutdown` was not called -- an early return on the way up
-    /// from an error. Tell the thread to finish rather than waiting for a disconnect
-    /// that the panic hook's static handle prevents.
+    /// from an error, or a panic unwinding. Tell the thread to finish rather than waiting
+    /// for a disconnect that the panic hook's static handle prevents.
     fn drop(&mut self) {
-        if let Some(handle) = self.handle.take() {
-            let _ = self.tx.send(Message::Shutdown);
-            let _ = handle.join();
-        }
+        self.stop(DROP_STOP_TIMEOUT);
     }
 }
 

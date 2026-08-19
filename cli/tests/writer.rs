@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use doer::term;
 use doer::writer::{Job, Saver};
@@ -75,7 +75,7 @@ fn shutdown_returns_even_though_the_panic_hook_holds_a_sender_forever() {
         // made an earlier version wait for a disconnect that could never happen.
         let handle = saver.flush_handle();
         saver.send(Job::AllTodos(vec![todo("keep me")]));
-        saver.shutdown(Duration::from_secs(2));
+        let _ = saver.shutdown(Duration::from_secs(2));
         drop(handle);
     });
 }
@@ -95,7 +95,7 @@ fn a_flush_writes_what_was_queued() {
     let recorder = Recorder::default();
     let saver = Saver::start(Box::new(recorder.clone()));
     saver.send(Job::AllTodos(vec![todo("persisted")]));
-    saver.shutdown(Duration::from_secs(2));
+    let _ = saver.shutdown(Duration::from_secs(2));
 
     assert_eq!(*recorder.writes.lock().unwrap(), vec![Target::AllTodos]);
 }
@@ -104,5 +104,44 @@ fn a_flush_writes_what_was_queued() {
 fn the_panic_flush_seam_accepts_a_handle() {
     let saver = Saver::start(Box::new(Recorder::default()));
     assert!(term::SAVER.set(Box::new(saver.flush_handle())).is_ok() || term::SAVER.get().is_some());
-    saver.shutdown(Duration::from_secs(2));
+    let _ = saver.shutdown(Duration::from_secs(2));
+}
+
+/// A store whose write never returns, standing in for an unresponsive filesystem.
+struct WedgedStore;
+
+impl Store for WedgedStore {
+    fn load(&self) -> Loaded<StoreSnapshot> {
+        Loaded::ok(StoreSnapshot::default())
+    }
+
+    fn save_all_todos(&self, _todos: &[Todo]) -> Result<(), StoreError> {
+        loop {
+            std::thread::sleep(Duration::from_secs(60));
+        }
+    }
+
+    fn save_project(&self, _file: &ProjectFile) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    fn delete_project(&self, _id: &ProjectId) -> Result<(), StoreError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn shutdown_gives_up_on_a_wedged_write_instead_of_holding_the_process_open() {
+    let saver = Saver::start(Box::new(WedgedStore));
+    saver.send(Job::AllTodos(Vec::new()));
+
+    let start = Instant::now();
+    let flushed = saver.shutdown(Duration::from_millis(300));
+
+    assert!(!flushed, "a write that never returns has not been flushed");
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "shutdown waited {:?}; it must be bounded, because joining the thread is not",
+        start.elapsed()
+    );
 }
