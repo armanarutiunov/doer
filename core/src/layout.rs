@@ -406,8 +406,11 @@ impl Builder {
 
         // The completed section carries a second date column, so its rows wrap narrower
         // than active ones. Wrapping here is what keeps the scroll model aware of that.
+        // Sized from the section, not from this row: a done todo with no completion
+        // timestamp still belongs under the Completed header and must line up with the
+        // rows either side of it.
         let widths = if done { self.completed } else { self.active };
-        let columns = DateColumns::fit(self.content_width, widths, completed_age.is_some());
+        let columns = DateColumns::fit(self.content_width, widths, done);
         let age = if columns.age.is_some() {
             age
         } else {
@@ -892,6 +895,48 @@ mod narrow_tests {
         let columns = rows.first().expect("a row").columns;
         assert_eq!(columns.age, Some(MIN_COLUMN));
         assert_eq!(columns.completed, Some(MIN_COLUMN));
+    }
+
+    /// A foreign or older file can hold a done todo with no completion timestamp. It
+    /// still belongs under the Completed header, so it has to line up with the rows
+    /// around it rather than being measured on its own.
+    #[test]
+    fn a_done_todo_without_a_completion_date_still_matches_its_section() {
+        let with_date = Todo {
+            id: TodoId::from("1111111111111111"),
+            text: "finished".into(),
+            done: true,
+            created_at: 0,
+            completed_at: Some(0),
+        };
+        let without_date = Todo {
+            id: TodoId::from("2222222222222222"),
+            text: "no completion date".into(),
+            done: true,
+            created_at: 0,
+            completed_at: None,
+        };
+        let ws = Workspace::new(
+            vec![with_date, without_date],
+            Projects::default(),
+            HashMap::new(),
+        );
+
+        let geo = Geometry::new(120, 40, false);
+        let dl = DisplayList::build(&ws, &ViewId::All, None);
+        let layout = Layout::build(&ws, &dl, &ViewId::All, &geo, &LayoutHints::default(), T0);
+        let rows: Vec<&TodoRow> = layout
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                Row::Todo(todo) => Some(todo),
+                _ => None,
+            })
+            .collect();
+        let first = rows.first().expect("a row").columns;
+        for row in &rows {
+            assert_eq!(row.columns, first, "{:?} was measured on its own", row.line);
+        }
     }
 
     #[test]
