@@ -18,6 +18,7 @@ use crate::ui::theme::Theme;
 /// Rows above the first project: "All Todos", blank, "Projects", blank.
 pub const PREAMBLE_ROWS: usize = 4;
 const INDENT: usize = 2;
+const PROJECT_PREFIX: &str = "# ";
 const HINT: &str = "press 'a' to create";
 
 pub struct SidebarView<'a> {
@@ -69,7 +70,7 @@ pub fn render(frame: &mut Frame, area: Rect, view: &SidebarView<'_>, theme: &The
             if let SidebarRow::Editing { depth } = row
                 && let Some((_, _, col)) = &view.editing
             {
-                let x = text::to_u16(label_indent(*depth) + col);
+                let x = text::to_u16(name_column(*depth) + col);
                 caret = Some((area.x + x, area.y + text::to_u16(offset)));
             }
             paint(row, scroll + offset == cursor_row, width, view, theme)
@@ -169,6 +170,11 @@ fn label_indent(depth: usize) -> usize {
     INDENT * (depth + 1)
 }
 
+/// Where a project name starts on its row: the indent plus the "# " every row draws.
+fn name_column(depth: usize) -> usize {
+    label_indent(depth) + PROJECT_PREFIX.len()
+}
+
 fn paint(
     row: &SidebarRow,
     is_cursor: bool,
@@ -194,7 +200,10 @@ fn paint(
         SidebarRow::Editing { depth } => {
             let typed = view.editing.as_ref().map_or("", |(_, text, _)| *text);
             (
-                format!("{}# {typed}", " ".repeat(label_indent(*depth))),
+                format!(
+                    "{}{PROJECT_PREFIX}{typed}",
+                    " ".repeat(label_indent(*depth))
+                ),
                 theme.editing,
             )
         }
@@ -204,11 +213,20 @@ fn paint(
             };
             let indent = " ".repeat(label_indent(*depth));
             if view.confirm_delete == Some(id) {
-                (format!("{indent}# Delete? y/n"), theme.confirm_delete)
+                (
+                    format!("{indent}{PROJECT_PREFIX}Delete? y/n"),
+                    theme.confirm_delete,
+                )
             } else if view.current == Some(id) {
-                (format!("{indent}# {}", project.name), theme.sidebar_current)
+                (
+                    format!("{indent}{PROJECT_PREFIX}{}", project.name),
+                    theme.sidebar_current,
+                )
             } else {
-                (format!("{indent}# {}", project.name), theme.sidebar_item)
+                (
+                    format!("{indent}{PROJECT_PREFIX}{}", project.name),
+                    theme.sidebar_item,
+                )
             }
         }
     };
