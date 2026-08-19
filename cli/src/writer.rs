@@ -26,6 +26,10 @@ pub enum Job {
 enum Message {
     Work(Job),
     Flush(SyncSender<()>),
+    /// Explicit, rather than relying on the channel disconnecting: the panic hook's
+    /// handle lives in a static and holds a sender that is never dropped, so waiting
+    /// for a disconnect would wait forever.
+    Shutdown,
 }
 
 /// What the thread reports back about a write it attempted. Successes matter as much
@@ -101,16 +105,23 @@ impl Saver {
         }
     }
 
-    /// Writes everything queued, then waits for the thread to finish. Dropping the
-    /// `Saver` is what closes the channel and lets the thread return.
-    pub fn shutdown(self, timeout: Duration) {
+    /// Writes everything queued, then waits for the thread to finish.
+    pub fn shutdown(mut self, timeout: Duration) {
         self.flush(timeout);
+        let _ = self.tx.send(Message::Shutdown);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 
 impl Drop for Saver {
+    /// Only reached when `shutdown` was not called -- an early return on the way up
+    /// from an error. Tell the thread to finish rather than waiting for a disconnect
+    /// that the panic hook's static handle prevents.
     fn drop(&mut self) {
         if let Some(handle) = self.handle.take() {
+            let _ = self.tx.send(Message::Shutdown);
             let _ = handle.join();
         }
     }
@@ -155,6 +166,10 @@ impl Worker {
                     self.write_all(&mut pending, &mut deletes);
                     due = None;
                     drop(ack);
+                }
+                Ok(Message::Shutdown) => {
+                    self.write_all(&mut pending, &mut deletes);
+                    return;
                 }
                 Err(RecvTimeoutError::Timeout) => {
                     self.write_all(&mut pending, &mut deletes);

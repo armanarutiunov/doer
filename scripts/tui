@@ -12,6 +12,7 @@
 #   scripts/tui size 100 30                           resize the window
 #   scripts/tui seed                                  refill the scratch home
 #   scripts/tui shell                                 attach so you can drive it
+#   scripts/tui alive                                 did the process exit?
 #   scripts/tui stop                                  kill the session
 #
 # Key names are tmux's: Enter Escape Space Tab BSpace Up Down Left Right C-d C-r.
@@ -122,6 +123,16 @@ start() {
 
 settle() { sleep 0.25; }
 
+# Capturing must never silently relaunch a process that has exited, or a quit bug looks
+# like a working app.
+capture() {
+  if running; then
+    tmux capture-pane -p ${1:-} -t "$session"
+  else
+    echo "(doer exited)"
+  fi
+}
+
 case "${1:-screen}" in
   keys)
     shift
@@ -137,21 +148,22 @@ case "${1:-screen}" in
       sleep 0.06
     done
     settle
-    tmux capture-pane -p -t "$session"
+    capture
     ;;
-  screen)  start; tmux capture-pane -p -t "$session" ;;
-  colors)  start; tmux capture-pane -p -e -t "$session" ;;
+  screen)  start; capture ;;
+  colors)  start; capture -e ;;
   cursor)  start; tmux display-message -p -t "$session" 'cursor #{cursor_x},#{cursor_y} visible=#{cursor_flag}' ;;
   size)
     start
     [ $# -eq 3 ] || die "size needs width and height"
     tmux resize-window -t "$session" -x "$2" -y "$3"
     settle
-    tmux capture-pane -p -t "$session"
+    capture
     ;;
   seed)  tmux kill-session -t "$session" 2>/dev/null || true; seed; echo "seeded $home" ;;
   home)  echo "$home" ;;
   shell) start; tmux attach -t "$session" ;;
+  alive) if running; then echo "running"; else echo "exited"; fi ;;
   stop)  tmux kill-session -t "$session" 2>/dev/null || true ;;
   files) find "$home" -type f | sort | while read -r f; do echo "--- $f"; cat "$f"; echo; done ;;
   *)     die "unknown command '${1}'. Run with no arguments for the screen, or read the header." ;;
