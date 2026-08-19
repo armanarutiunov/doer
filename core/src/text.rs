@@ -40,10 +40,7 @@ pub fn wrap_lines(text: &str, max_width: usize) -> Vec<WrappedLine> {
 
     let mut lines: Vec<WrappedLine> = Vec::new();
     let mut current = String::new();
-    // Splitting on a space yields an empty word for a trailing one. Appending it is a
-    // no-op, but pushing the line first is not: it would emit a blank continuation row,
-    // which the scroll model would then reserve space for.
-    let trailing_space = text.ends_with(' ');
+
     let mut current_width = 0;
     // Where the line being built starts, and where the source has been consumed to.
     let mut current_start = 0;
@@ -56,9 +53,12 @@ pub fn wrap_lines(text: &str, max_width: usize) -> Vec<WrappedLine> {
         });
     };
 
+    // Splitting on spaces yields an empty word per trailing space. Appending one is a
+    // no-op, but pushing the line first is not: it would emit a blank continuation row,
+    // which the scroll model would then reserve space for.
     let words: Vec<&str> = {
         let mut words: Vec<&str> = text.split(' ').collect();
-        if trailing_space {
+        while words.last().is_some_and(|last| last.is_empty()) {
             words.pop();
         }
         words
@@ -224,7 +224,21 @@ impl TextInput {
     pub fn insert_char(&mut self, ch: char) {
         let ch = if ch.is_control() { ' ' } else { ch };
         self.text.insert(self.caret, ch);
-        self.caret = self.caret.saturating_add(ch.len_utf8());
+        let after = self.caret.saturating_add(ch.len_utf8());
+        // The inserted character can merge with what follows it -- typing an emoji before
+        // a lone skin-tone modifier produces one cluster -- and the end of the character
+        // is then inside that cluster. Every caret motion looks itself up in the boundary
+        // list, so a caret parked inside a cluster silently ignores every subsequent
+        // keystroke. Land on the boundary at or after the insertion instead.
+        self.caret = self.snap_forward(after);
+    }
+
+    /// The first grapheme boundary at or after `byte`.
+    fn snap_forward(&self, byte: usize) -> usize {
+        self.boundaries()
+            .into_iter()
+            .find(|boundary| *boundary >= byte)
+            .unwrap_or(self.text.len())
     }
 
     pub fn insert_str(&mut self, text: &str) {
@@ -441,8 +455,11 @@ mod tests {
     fn a_trailing_space_does_not_add_a_line() {
         assert_eq!(wrap_lines("abcde ", 5).len(), 1);
         assert_eq!(wrap("abcde ", 5), ["abcde"]);
+        assert_eq!(wrap("abcde  ", 5), ["abcde"], "however many spaces");
+        assert_eq!(wrap("abcde     ", 5), ["abcde"]);
         assert_eq!(wrap("ab ", 5), ["ab"]);
         assert_eq!(wrap(" ", 5), [""]);
+        assert_eq!(wrap("   ", 5), [""]);
         assert_eq!(wrap("one two ", 7), ["one two"]);
     }
 
@@ -537,6 +554,31 @@ mod tests {
         let mut input = TextInput::default();
         input.insert_str("two\tlines\nhere");
         assert_eq!(input.text(), "two lines here");
+    }
+
+    /// An inserted character can merge with the text after the caret. If the caret were
+    /// left inside the resulting cluster, every later motion and deletion would look up a
+    /// position that is not in the boundary list and do nothing at all.
+    #[test]
+    fn a_merging_insert_leaves_the_caret_on_a_boundary() {
+        let mut input = TextInput::new("\u{1F3FD}");
+        input.move_home();
+        input.insert_char('\u{1F44D}');
+        assert_eq!(input.text(), "\u{1F44D}\u{1F3FD}");
+
+        input.backspace();
+        assert_eq!(input.text(), "", "the whole cluster goes");
+    }
+
+    #[test]
+    fn editing_still_works_after_a_merging_insert() {
+        let mut input = TextInput::new("\u{1F3FD}x");
+        input.move_home();
+        input.insert_char('\u{1F44D}');
+        input.move_left();
+        input.move_right();
+        input.insert_char('!');
+        assert_eq!(input.text(), "\u{1F44D}\u{1F3FD}!x");
     }
 
     #[test]

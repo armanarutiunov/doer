@@ -79,11 +79,13 @@ proptest! {
 
     #[test]
     fn editing_leaves_the_caret_on_a_grapheme_boundary(ops in prop::collection::vec(0u8..8, 0..40)) {
-        let mut input = TextInput::new("héllo 世界 👍🏽");
+        // Includes a LONE skin-tone modifier: inserting an emoji before it merges the two
+        // into one cluster, which is how a caret ends up inside a cluster.
+        let mut input = TextInput::new("héllo 世界 \u{1F3FD} 👍🏽");
         for op in ops {
             match op {
                 0 => input.insert_char('x'),
-                1 => input.insert_char('世'),
+                1 => input.insert_char('\u{1F44D}'),
                 2 => input.backspace(),
                 3 => input.delete(),
                 4 => input.move_left(),
@@ -91,7 +93,20 @@ proptest! {
                 6 => input.move_word_left(),
                 _ => input.move_word_right(),
             }
-            prop_assert!(input.text().is_char_boundary(input.caret_byte()));
+            // A char boundary is not enough: a caret inside a grapheme cluster is not in
+            // the boundary list, so every later motion silently does nothing.
+            let boundaries: Vec<usize> = input
+                .text()
+                .grapheme_indices(true)
+                .map(|(at, _)| at)
+                .chain(std::iter::once(input.text().len()))
+                .collect();
+            prop_assert!(
+                boundaries.contains(&input.caret_byte()),
+                "caret {} is inside a cluster of {:?}",
+                input.caret_byte(),
+                input.text()
+            );
         }
     }
 
