@@ -6,7 +6,7 @@ use doer_core::app::{AppState, Effect};
 use doer_core::input::{self, KeyCode, KeyPress, Mods};
 use doer_core::layout::Geometry;
 use doer_core::mode::{Focus, MainMode, SidebarMode};
-use doer_core::store::{ProjectFile, Store, StoreError, Target};
+use doer_core::store::{ProjectFile, Store, Target};
 use doer_core::{ProjectId, Todo};
 use ratatui::crossterm::event::{KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
 
@@ -68,10 +68,10 @@ fn run() -> anyhow::Result<()> {
     let geo = Geometry::new(size.width, size.height, true);
     let (mut app, startup) = AppState::from_loaded(loaded, geo);
 
-    let saver = Saver::start(Box::new(store));
+    let mut saver = Saver::start(Box::new(store));
     let _ = term::SAVER.set(Box::new(saver.flush_handle()));
 
-    let events = Events::start(now());
+    let events = Events::start(now);
     let theme = Theme::for_depth(ColorDepth::detect());
 
     for effect in startup {
@@ -97,7 +97,7 @@ fn run() -> anyhow::Result<()> {
         let moment = now();
         for input in batch {
             if matches!(input, Input::Closed) {
-                return finish(saver, FLUSH_TIMEOUT);
+                return finish(&mut saver, FLUSH_TIMEOUT);
             }
             for action in actions_for(input, &app) {
                 // reduce puts its saves and deletes before Quit, which is what makes
@@ -105,7 +105,7 @@ fn run() -> anyhow::Result<()> {
                 // Quit would be dropped.
                 for effect in doer_core::app::reduce(&mut app, &action, moment) {
                     if matches!(effect, Effect::Quit) {
-                        return finish(saver, FLUSH_TIMEOUT);
+                        return finish(&mut saver, FLUSH_TIMEOUT);
                     }
                     apply(&effect, &app, &saver, &events);
                 }
@@ -113,20 +113,11 @@ fn run() -> anyhow::Result<()> {
             }
         }
 
+        // Reports are drained before the death check, so a success still queued from
+        // before a panic cannot arrive afterwards and clear the warning about it.
         // A write that failed has to say so; the domain state is untouched, so the file
         // stays dirty and the next edit retries it. A standing failure is cleared only by
-        // a write that actually got through -- not by the next keystroke, or the user
-        // could quit on a stale reassurance.
-        // A panic on the save thread would otherwise be invisible: the app keeps taking
-        // edits, every write fails silently, and the reports channel is gone so nothing
-        // ever reports it.
-        if saver.has_died() && !saving_broken {
-            saving_broken = true;
-            let effect = app.save_failed(None, &StoreError::WriterStopped);
-            apply(&effect, &app, &saver, &events);
-            dirty = true;
-        }
-
+        // a write to that same file getting through.
         for report in saver.reports().collect::<Vec<_>>() {
             match report {
                 Report::Wrote(target) => app.save_succeeded(&target),
@@ -137,18 +128,43 @@ fn run() -> anyhow::Result<()> {
             }
             dirty = true;
         }
+
+        // A panic on the save thread would otherwise be invisible: the app keeps taking
+        // edits, every write fails silently, and the reports channel is gone so nothing
+        // ever reports it.
+        if saver.has_died() && !saving_broken {
+            saving_broken = true;
+            let effect = app.saving_stopped();
+            apply(&effect, &app, &saver, &events);
+            dirty = true;
+        }
     }
 
-    finish(saver, FLUSH_TIMEOUT)
+    finish(&mut saver, FLUSH_TIMEOUT)
 }
 
-/// Flushes, and says so if the bounded wait ran out. Exiting quietly on a timeout would
-/// tell the user their last edits were saved when they were not.
-fn finish(saver: Saver, timeout: Duration) -> anyhow::Result<()> {
-    if saver.shutdown(timeout) {
-        return Ok(());
+/// Flushes, then says what could not be written. Exiting quietly would tell the user
+/// their last edits were saved when they were not, so both a wait that ran out and a
+/// write that failed during the final flush are reported.
+fn finish(saver: &mut Saver, timeout: Duration) -> anyhow::Result<()> {
+    let flushed = saver.shutdown(timeout);
+    let failures: Vec<String> = saver
+        .reports()
+        .filter_map(|report| match report {
+            Report::Failed(target, error) => Some(format!("{target}: {error}")),
+            Report::Wrote(_) => None,
+        })
+        .collect();
+
+    if !failures.is_empty() {
+        anyhow::bail!("could not save {}", failures.join(", "));
     }
-    anyhow::bail!("gave up waiting for the disk after {timeout:?}; some edits may not be saved")
+    if !flushed {
+        anyhow::bail!(
+            "gave up waiting for the disk after {timeout:?}; some edits may not be saved"
+        );
+    }
+    Ok(())
 }
 
 fn apply(effect: &Effect, app: &AppState, saver: &Saver, events: &Events) {

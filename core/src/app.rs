@@ -172,6 +172,9 @@ pub struct AppState {
     /// Files whose last write failed. Tracked per file, because a success elsewhere is
     /// not evidence about this one.
     failed_saves: Vec<Target>,
+    /// Set once the writer has died. Unlike a failed file this can never be cleared, so a
+    /// success arriving afterwards must not retract the warning.
+    saving_stopped: bool,
 
     pub undo: UndoStack,
     dirty: DirtySet,
@@ -186,6 +189,7 @@ impl AppState {
     pub fn new(ws: Workspace, geo: Geometry) -> Self {
         let mut state = Self {
             failed_saves: Vec::new(),
+            saving_stopped: false,
             ws,
             view: ViewId::All,
             views: Vec::new(),
@@ -249,17 +253,24 @@ impl AppState {
     /// warning while the stale data is still on disk.
     pub fn save_succeeded(&mut self, target: &Target) {
         self.failed_saves.retain(|failed| failed != target);
-        if self.failed_saves.is_empty() && self.has_error_toast() {
+        if !self.has_failed_saves() && self.has_error_toast() {
             self.toast = None;
         }
     }
 
-    /// True while any file is known to have failed its last write. The quit guard reads
-    /// this rather than the toast, so a message that has scrolled away cannot make an
-    /// unsaved file look saved.
+    /// The thread that performs writes has died, so nothing will be saved again. Arms the
+    /// quit guard by itself: there is no target to blame, and every future edit is lost.
+    pub fn saving_stopped(&mut self) -> Effect {
+        self.saving_stopped = true;
+        Effect::Toast(self.new_toast(StoreError::WriterStopped.toast(), ToastLevel::Error))
+    }
+
+    /// True while anything is known to be unsaved. The quit guard reads this rather than
+    /// the toast, so a message that has been superseded cannot make an unsaved file look
+    /// saved.
     #[must_use]
     pub fn has_failed_saves(&self) -> bool {
-        !self.failed_saves.is_empty()
+        self.saving_stopped || !self.failed_saves.is_empty()
     }
 
     /// Kept on `geo` alone, because that is what the layout reads; a second copy on
@@ -387,6 +398,7 @@ impl AppState {
         }
         let (result, touched) = change(&mut self.ws);
         debug_assert!(self.ws.is_valid(), "a mutation left the workspace invalid");
+        debug_assert_names_every_change(&before.ws, &self.ws, &touched);
 
         // Refusing after the fact rather than before: only the change itself knows which
         // files it touches, and rolling back to a snapshot we already hold is cheaper than
@@ -834,6 +846,44 @@ fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
     effects
 }
 
+/// Every bucket whose contents a mutation changed has to be named in its `Touched` set,
+/// or its file is left holding a stale copy of a todo that now lives somewhere else. This
+/// catches the whole class rather than one instance of it, and it is the check the single
+/// mutation choke point exists to make possible.
+///
+/// Compiled out of release builds. In debug it costs one pass over the id lists, which is
+/// far less than the workspace clone the rollback already takes.
+#[cfg(debug_assertions)]
+fn debug_assert_names_every_change(before: &Workspace, after: &Workspace, touched: &Touched) {
+    let mut buckets = before.buckets_in_display_order();
+    for bucket in after.buckets_in_display_order() {
+        if !buckets.contains(&bucket) {
+            buckets.push(bucket);
+        }
+    }
+
+    for bucket in buckets {
+        let ids = |ws: &Workspace| -> Vec<TodoId> {
+            ws.todos(&bucket).iter().map(|t| t.id.clone()).collect()
+        };
+        if ids(before) == ids(after) {
+            continue;
+        }
+        let target = target_of(&bucket);
+        let named = touched.saves.contains(&target)
+            || bucket
+                .project()
+                .is_some_and(|id| touched.deletes.contains(id));
+        assert!(
+            named,
+            "mutation changed {target} but did not name it; its file would keep a stale copy"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_assert_names_every_change(_: &Workspace, _: &Workspace, _: &Touched) {}
+
 /// One todo as the undo message cares about it.
 struct Placed {
     id: TodoId,
@@ -1147,11 +1197,20 @@ fn move_todos(state: &mut AppState, dir: Dir) -> Vec<Effect> {
             state.new_toast("-- completed todos can't be reordered --", ToastLevel::Info),
         )],
         Reorder::Blocked(Blocked::Edge) => Vec::new(),
-        Reorder::Move { ref bucket, .. } => {
+        Reorder::Move {
+            ref bucket,
+            ref ids,
+            ..
+        } => {
             let target = target_of(bucket);
             match state.mutate(|ws| {
+                // Read before the move, and over every selected todo rather than just the
+                // destination: a visual run whose leading edge shares a bucket with its
+                // neighbour plans as a Move even when the rest of the run sits in another
+                // section, so this drains files the destination alone would not name.
+                let touched = touched_for_all(ws, ids).and_save(target);
                 reorder::apply(ws, &plan);
-                ((), Touched::saving(target))
+                ((), touched)
             }) {
                 Ok(()) => Vec::new(),
                 Err(locked) => state.refuse(&locked),

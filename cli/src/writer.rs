@@ -158,8 +158,10 @@ impl Saver {
     /// Writes everything queued, then waits for the thread to finish. False means the
     /// bound expired with writes outstanding, which the caller has to report: exiting
     /// quietly would tell the user their last edits were saved.
+    /// Borrows rather than consumes, so the caller can still drain the reports the final
+    /// flush produced: a write that failed there is the last chance to say so.
     #[must_use]
-    pub fn shutdown(mut self, timeout: Duration) -> bool {
+    pub fn shutdown(&mut self, timeout: Duration) -> bool {
         let flushed = self.flush(timeout);
         self.stop(timeout);
         flushed

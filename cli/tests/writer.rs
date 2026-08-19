@@ -70,7 +70,7 @@ fn within<F: FnOnce() + Send + 'static>(timeout: Duration, what: &str, body: F) 
 #[test]
 fn shutdown_returns_even_though_the_panic_hook_holds_a_sender_forever() {
     within(Duration::from_secs(5), "shutdown", || {
-        let saver = Saver::start(Box::new(Recorder::default()));
+        let mut saver = Saver::start(Box::new(Recorder::default()));
         // The real app parks this in a static that is never dropped, which is what
         // made an earlier version wait for a disconnect that could never happen.
         let handle = saver.flush_handle();
@@ -93,7 +93,7 @@ fn dropping_the_saver_without_shutting_it_down_also_returns() {
 #[test]
 fn a_flush_writes_what_was_queued() {
     let recorder = Recorder::default();
-    let saver = Saver::start(Box::new(recorder.clone()));
+    let mut saver = Saver::start(Box::new(recorder.clone()));
     saver.send(Job::AllTodos(vec![todo("persisted")]));
     let _ = saver.shutdown(Duration::from_secs(2));
 
@@ -102,7 +102,7 @@ fn a_flush_writes_what_was_queued() {
 
 #[test]
 fn the_panic_flush_seam_accepts_a_handle() {
-    let saver = Saver::start(Box::new(Recorder::default()));
+    let mut saver = Saver::start(Box::new(Recorder::default()));
     assert!(term::SAVER.set(Box::new(saver.flush_handle())).is_ok() || term::SAVER.get().is_some());
     let _ = saver.shutdown(Duration::from_secs(2));
 }
@@ -132,7 +132,7 @@ impl Store for WedgedStore {
 
 #[test]
 fn shutdown_gives_up_on_a_wedged_write_instead_of_holding_the_process_open() {
-    let saver = Saver::start(Box::new(WedgedStore));
+    let mut saver = Saver::start(Box::new(WedgedStore));
     saver.send(Job::AllTodos(Vec::new()));
 
     let start = Instant::now();

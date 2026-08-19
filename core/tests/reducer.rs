@@ -1341,3 +1341,74 @@ fn a_refused_undo_reports_the_lock_rather_than_a_success() {
     assert!(infos(&effects).is_empty(), "nothing was undone");
     assert_eq!(warnings(&effects).len(), 1);
 }
+
+#[test]
+fn a_visual_run_spanning_a_section_boundary_saves_every_file_it_drains() {
+    let (mut state, project) = app_with_project(&["loose"], &["p1", "p2"]);
+
+    // Select "loose" and "p1" — the run straddles the boundary, so its leading edge
+    // shares a bucket with the neighbour below and the move plans as a Move, not a
+    // Reassign. It still empties the ungrouped bucket.
+    send(&mut state, &A::EnterVisual);
+    send(&mut state, &A::ExtendVisual(Motion::Down));
+    let effects = send(&mut state, &A::Move(Dir::Down));
+
+    assert!(
+        state.ws.todos(&Bucket::All).is_empty(),
+        "the move drained the ungrouped bucket"
+    );
+
+    let mut written = saves(&effects);
+    written.sort_by_key(ToString::to_string);
+    assert_eq!(
+        written,
+        [Target::AllTodos, Target::Project(project)],
+        "all-todos.json must be rewritten too, or on the next launch the todo exists in \
+         both files and is loaded twice"
+    );
+}
+
+#[test]
+fn a_reorder_that_drains_a_bucket_names_it_even_with_the_cursor_elsewhere() {
+    let (mut state, project) = app_with_project(&["a", "b"], &["p"]);
+
+    // Whole active list selected, moved down: every bucket in the run is touched.
+    send(&mut state, &A::EnterVisual);
+    send(&mut state, &A::ExtendVisual(Motion::Down));
+    let effects = send(&mut state, &A::Move(Dir::Down));
+
+    let written = saves(&effects);
+    assert!(written.contains(&Target::AllTodos));
+    assert!(written.contains(&Target::Project(project)));
+}
+
+/// A dead writer has no target to blame, but everything from here on is unsaved, so the
+/// guard has to arm on it alone -- and no later success may retract it.
+#[test]
+fn a_stopped_writer_arms_the_quit_guard_and_cannot_be_cleared() {
+    use doer_core::store::Target;
+
+    let mut state = app(&["a"]);
+    let effect = state.saving_stopped();
+
+    let Effect::Toast(toast) = effect else {
+        panic!("expected a toast");
+    };
+    assert_eq!(toast.level, ToastLevel::Error);
+    assert!(state.has_failed_saves());
+
+    state.save_succeeded(&Target::AllTodos);
+    assert!(
+        state.has_failed_saves(),
+        "a success cannot un-break the writer"
+    );
+
+    assert!(
+        !send(&mut state, &A::Quit).contains(&Effect::Quit),
+        "q must ask"
+    );
+    assert!(
+        send(&mut state, &A::Quit).contains(&Effect::Quit),
+        "and then obey"
+    );
+}
