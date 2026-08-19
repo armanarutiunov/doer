@@ -283,6 +283,9 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
+    // Indexing is the point in a test: a bad index should fail the test loudly.
+    #![allow(clippy::indexing_slicing)]
+
     use super::*;
 
     const T0: i64 = 1_700_000_000;

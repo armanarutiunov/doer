@@ -49,6 +49,7 @@ impl Projects {
     /// Enforces the two-level invariant: a child whose parent is missing, or whose
     /// parent is itself a child, is promoted to top level rather than dropped.
     fn repair(&mut self) {
+        self.drop_duplicate_ids();
         let top: Vec<ProjectId> = self
             .items
             .iter()
@@ -62,6 +63,22 @@ impl Projects {
                 project.parent_id = None;
             }
         }
+    }
+
+    /// A project id addresses its file and its todo list, so two projects cannot share
+    /// one. Unlike a duplicate todo id, which `Workspace` re-issues because the text is
+    /// what matters, a re-issued project id would address no file and no todos — a
+    /// phantom project that then writes itself to disk. Keeping the first and dropping
+    /// the rest loses strictly less.
+    fn drop_duplicate_ids(&mut self) {
+        let mut seen: Vec<ProjectId> = Vec::with_capacity(self.items.len());
+        self.items.retain(|project| {
+            if seen.contains(&project.id) {
+                return false;
+            }
+            seen.push(project.id.clone());
+            true
+        });
     }
 
     #[must_use]
@@ -349,6 +366,31 @@ mod tests {
             .map(|p| p.id.as_str())
             .collect();
         assert_eq!(order, ["b", "a"]);
+    }
+
+    #[test]
+    fn two_projects_claiming_one_id_collapse_to_the_first() {
+        let mut first = p("dup", 0, None);
+        first.name = "kept".into();
+        let mut second = p("dup", 1, None);
+        second.name = "dropped".into();
+
+        let projects = Projects::new(vec![first, second, p("other", 2, None)]);
+
+        assert_eq!(projects.len(), 2);
+        assert_eq!(
+            projects
+                .get(&ProjectId::from("dup"))
+                .map(|p| p.name.as_str()),
+            Some("kept")
+        );
+    }
+
+    #[test]
+    fn a_duplicate_id_added_later_is_not_admitted() {
+        let mut projects = Projects::new(vec![p("a", 0, None)]);
+        projects.push(p("a", 1, None));
+        assert_eq!(projects.len(), 1);
     }
 
     #[test]
