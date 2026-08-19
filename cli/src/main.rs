@@ -90,8 +90,10 @@ fn run() -> anyhow::Result<()> {
         let Ok(first) = events.next() else { break };
         let batch: Vec<Input> = std::iter::once(first).chain(events.drain()).collect();
 
+        // One reading of the clock for the whole batch, so every todo created by a key
+        // burst shares a timestamp and the age labels cannot disagree within a frame.
+        let moment = now();
         for input in batch {
-            let moment = now();
             for action in actions_for(input, &app) {
                 for effect in doer_core::app::reduce(&mut app, &action, moment) {
                     if matches!(effect, Effect::Quit) {
