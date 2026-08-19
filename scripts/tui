@@ -32,7 +32,13 @@ die() { echo "harness: $*" >&2; exit 1; }
 command -v tmux >/dev/null || die "tmux is not installed"
 
 build() {
-  ( cd "$root" && cargo build --quiet ) || die "build failed"
+  # Quietly, and to stderr, so cargo's output never lands in the middle of a captured
+  # screen and gets read as part of the UI.
+  ( cd "$root" && cargo build --quiet >/dev/null 2>build.log ) || {
+    cat "$root/build.log" >&2
+    die "build failed"
+  }
+  rm -f "$root/build.log"
 }
 
 seed() {
@@ -152,7 +158,15 @@ case "${1:-screen}" in
     ;;
   screen)  start; capture ;;
   colors)  start; capture -e ;;
-  cursor)  start; tmux display-message -p -t "$session" 'cursor #{cursor_x},#{cursor_y} visible=#{cursor_flag}' ;;
+  cursor)
+    start
+    if running; then
+      pane=$(tmux list-panes -t "$session" -F '#{pane_id}' | head -1)
+      tmux display-message -p -t "$pane" 'cursor #{cursor_x},#{cursor_y} visible=#{cursor_flag}'
+    else
+      echo "(doer exited)"
+    fi
+    ;;
   size)
     start
     [ $# -eq 3 ] || die "size needs width and height"

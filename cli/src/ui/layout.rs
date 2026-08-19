@@ -41,15 +41,11 @@ pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
         (None, None, area)
     };
 
+    // Every row is confined to the centred column, which is what centres the mode bar
+    // under the list. Rows are built to fit it: the date columns shrink or drop
+    // (`DateColumns::fit`) and the mode bar shortens its counter, so nothing needs to
+    // overflow into the padding to stay readable.
     let column = centred_column(body);
-    // Rows start at the content column but may run past its right edge, as they did
-    // in the Elixir build: an over-long section header or mode bar overflows into the
-    // padding rather than being clipped. Row content is padded to the content width,
-    // so nothing else reaches into it.
-    let body_rows = Rect {
-        width: body.right().saturating_sub(column.x),
-        ..column
-    };
     let [_, content, _, search, _, modebar, _] = Layout::vertical([
         Constraint::Length(PAD_TOP),
         Constraint::Min(1),
@@ -59,7 +55,7 @@ pub fn frames(area: Rect, sidebar_open: bool) -> Frames {
         Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .areas(body_rows);
+    .areas(column);
 
     Frames {
         sidebar,
@@ -109,7 +105,7 @@ mod tests {
         // 81 wide: content 48, so 33 spare — 16 left, 17 right, as the Elixir div/2 did.
         let f = frames(screen(81, 24), false);
         assert_eq!(f.content.x, 16);
-        assert_eq!(content_width(81), 48);
+        assert_eq!(f.content.width, 48);
     }
 
     #[test]
@@ -126,9 +122,8 @@ mod tests {
         let f = frames(screen(100, 24), true);
         assert_eq!(f.sidebar.map(|r| r.width), Some(35));
         assert_eq!(f.border.map(|r| (r.x, r.width)), Some((35, 1)));
-        // Rows may overflow the content column, so the frame runs to the right edge.
         assert_eq!(f.content.x, 36 + content_left_pad(100 - 36));
-        assert_eq!(f.content.width, 100 - f.content.x);
+        assert_eq!(f.content.width, content_width(100 - 36));
     }
 
     #[test]
@@ -146,8 +141,18 @@ mod tests {
     fn a_tiny_screen_still_yields_a_usable_content_row() {
         let f = frames(screen(40, 10), true);
         assert!(f.sidebar.is_none());
-        assert_eq!(content_width(40), 24);
+        assert_eq!(f.content.width, 24);
         assert_eq!(f.content.height, 4);
+    }
+
+    #[test]
+    fn the_bottom_rows_share_the_lists_column_so_the_mode_bar_centres_under_it() {
+        let f = frames(screen(100, 30), true);
+        assert_eq!(
+            (f.modebar.x, f.modebar.width),
+            (f.content.x, f.content.width)
+        );
+        assert_eq!((f.search.x, f.search.width), (f.content.x, f.content.width));
     }
 
     #[test]

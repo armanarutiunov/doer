@@ -10,5 +10,5 @@ expression: text_of(terminal.backend().buffer())
                                         |
                                         |
                                         |
-         NORMAL 1/5 completed ? for help|
+         NORMAL  1/5 completed          |
                                         |

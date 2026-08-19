@@ -30,5 +30,5 @@ expression: text_of(terminal.backend().buffer())
                                                    J K        reorder projects                      |
                    \          toggle sidebar                                                        |
                    tab        switch focus                                                          |
-                   ?          help                                                  d               |
+                   ?          help                                                                  |
                    q          quit                                                                  |

@@ -244,3 +244,84 @@ fn every_line_of_a_wrapped_todo_carries_the_highlight() {
         "continuation line"
     );
 }
+
+/// The caret is the terminal's own, so it is not in the buffer and no snapshot covers
+/// it. These pin its column, which is the part that has been wrong twice.
+mod caret {
+    use super::*;
+    use doer_core::app::{EditTarget, Editing, ProjectEdit, SidebarState};
+
+    fn cursor_of(terminal: &mut Terminal<TestBackend>) -> (u16, u16) {
+        let position = terminal.get_cursor_position().unwrap();
+        (position.x, position.y)
+    }
+
+    #[test]
+    fn the_sidebar_rename_caret_sits_after_the_hash_prefix() {
+        let mut fixture = Fixture::new(100, 30);
+        fixture.app.pane = Pane::Sidebar;
+        fixture.app.sidebar = SidebarState::Insert {
+            target: ProjectEdit::Rename(ProjectId::from("1111111111111111")),
+            input: TextInput::new("work"),
+        };
+        let mut terminal = fixture.render();
+
+        // "  " indent + "# " prefix + "work"
+        assert_eq!(cursor_of(&mut terminal), (8, 4));
+    }
+
+    #[test]
+    fn a_child_rename_caret_follows_the_deeper_indent() {
+        let mut fixture = Fixture::new(100, 30);
+        fixture.app.pane = Pane::Sidebar;
+        fixture.app.sidebar = SidebarState::Insert {
+            target: ProjectEdit::Rename(ProjectId::from("2222222222222222")),
+            input: TextInput::new("api"),
+        };
+        let mut terminal = fixture.render();
+
+        // Four columns of indent for a child, then "# " and the name.
+        assert_eq!(cursor_of(&mut terminal), (9, 5));
+    }
+
+    #[test]
+    fn a_name_longer_than_the_pane_keeps_the_caret_inside_it() {
+        let long = "a-really-long-project-name-that-will-not-fit-at-all";
+        let mut fixture = Fixture::new(100, 30);
+        fixture.app.pane = Pane::Sidebar;
+        fixture.app.sidebar = SidebarState::Insert {
+            target: ProjectEdit::Rename(ProjectId::from("1111111111111111")),
+            input: TextInput::new(long),
+        };
+        let mut terminal = fixture.render();
+
+        let (x, _) = cursor_of(&mut terminal);
+        assert_eq!(x, 34, "the caret parks on the pane's last column");
+
+        // What is on screen is the tail being typed, not the head.
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..35).map(|x| buffer[(x, 4)].symbol()).collect();
+        assert!(
+            row.trim_end().ends_with("not-fit-at-all"),
+            "row was {row:?}"
+        );
+    }
+
+    #[test]
+    fn the_todo_caret_lands_on_the_column_the_character_occupies() {
+        let mut fixture = Fixture::new(100, 30);
+        let id = TodoId::from("bbbbbbbbbbbbbbb1");
+        fixture.app.cursor = Some(id.clone());
+        fixture.app.main = MainState::Insert(Editing {
+            target: EditTarget::Existing {
+                id,
+                original: "buy milk".into(),
+            },
+            input: TextInput::new("买菜 ok"),
+        });
+        let mut terminal = fixture.render();
+
+        // Content column starts at 49, four columns of prefix, then 买菜 (4) + " ok" (3).
+        assert_eq!(cursor_of(&mut terminal), (49 + 4 + 7, 3));
+    }
+}
