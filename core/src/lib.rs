@@ -6,12 +6,19 @@
 //! `std::fs`. Everything here is unit-testable without a screen, which is what keeps
 //! the rendering layer honest.
 
+pub mod action;
 pub mod id;
+pub mod input;
+pub mod mode;
 pub mod project;
+pub mod text;
 pub mod todo;
 pub mod workspace;
 
+pub use action::{Action, Dir, EditKey, Motion, ResolveCursor, SidebarAction};
 pub use id::{ProjectId, TodoId};
+pub use input::{InputContext, KeyCode, KeyPress, Mods};
+pub use mode::{Focus, MainMode, SidebarMode};
 pub use project::{Project, Projects};
 pub use todo::Todo;
 pub use workspace::{Bucket, Workspace};
