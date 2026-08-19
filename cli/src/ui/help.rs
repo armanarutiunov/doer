@@ -15,7 +15,17 @@ const PAD_X: usize = 3;
 const COL_WIDTH: usize = 30;
 const GAP: usize = 2;
 
+/// The whole screen is cleared before the panel is drawn. Leaving the list showing
+/// beside it left orphaned age values and wrapped tails hanging in space, which reads
+/// as a rendering fault rather than as deliberate transparency; and clearing the screen
+/// rather than just the list keeps the panel its full width on a terminal too narrow
+/// for the panel to fit beside the sidebar.
 pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
+    if area.is_empty() {
+        return;
+    }
+    frame.render_widget(Clear, area);
+
     let [left, right] = columns();
     let rows = column_height(left).max(column_height(right)) + 2;
     let box_width = PAD_X + COL_WIDTH + GAP + COL_WIDTH + PAD_X;
@@ -33,7 +43,6 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme) {
         .flex(Flex::Center)
         .areas(row);
 
-    frame.render_widget(Clear, popup);
     frame.render_widget(Paragraph::new(lines(rows, theme)), popup);
 }
 
