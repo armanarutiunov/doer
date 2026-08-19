@@ -143,6 +143,13 @@ impl TextInput {
         self.text.trim().is_empty()
     }
 
+    /// Byte offset of the caret. Exposed so tests can assert the grapheme-boundary
+    /// invariant that every other method here relies on.
+    #[must_use]
+    pub fn caret_byte(&self) -> usize {
+        self.caret
+    }
+
     /// Column the caret sits at, for positioning the terminal cursor.
     #[must_use]
     pub fn caret_col(&self) -> usize {
