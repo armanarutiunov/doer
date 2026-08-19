@@ -1,3 +1,21 @@
+//! Persistence contract.
+//!
+//! **The on-disk format is a shared contract, not this binary's private state.** Files in
+//! `~/.doer` are read and written by other versions of doer — the Elixir build the user may
+//! still switch back to, a newer build, and potentially the same account on another machine.
+//! Three properties follow, and a future implementer should preserve all three:
+//!
+//! - **Writes stay per-file and granular.** One combined store file would make any later
+//!   merge or sync hopeless; a per-project file changed by one machine merges by itself.
+//! - **Anything we do not understand is carried, never dropped.** A todo with fields from a
+//!   newer version keeps them, in their original position; an array entry that will not
+//!   decode is written back verbatim where it was. This is what makes a two-version or
+//!   two-machine world survivable, and it is enforced by `cli/tests/byte_compat.rs`.
+//! - **Field order and formatting are part of the contract.** See `ProjectFile` below.
+//!
+//! Deliberately absent, and deliberately not precluded: schema versions, file locking, and
+//! any notion of sync. None of them are needed today.
+
 use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};

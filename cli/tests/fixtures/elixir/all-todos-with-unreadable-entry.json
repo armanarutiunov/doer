@@ -1,0 +1,24 @@
+[
+  {
+    "id": "05dd062149b1f9a6",
+    "text": "a todo doer understands",
+    "done": false,
+    "created_at": 1786443522,
+    "completed_at": null
+  },
+  {
+    "id": "e8a24a7d1ce7c56e",
+    "text": "written by a newer doer",
+    "done": "sometimes",
+    "created_at": 1786443536,
+    "completed_at": null,
+    "priority": "high"
+  },
+  {
+    "id": "b99d4372f5e40c72",
+    "text": "another todo doer understands",
+    "done": true,
+    "created_at": 1786443540,
+    "completed_at": 1786444586
+  }
+]

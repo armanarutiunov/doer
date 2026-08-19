@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use doer_core::store::{Loaded, Problem, ProjectFile, Store, StoreError, StoreSnapshot, Target};
-use doer_core::{ProjectId, Todo};
+use doer_core::{ProjectId, Todo, TodoId};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -24,7 +24,15 @@ pub struct FsStore {
     /// they held so a save puts them back untouched. Without this a single unreadable
     /// entry would either be dropped on the next save or lock the file for the session.
     unparsed: Mutex<HashMap<Target, Unparsed>>,
+    /// The original JSON of any todo that carried fields this build does not know, keyed
+    /// by id so it follows the todo between files. Re-emitting from the original — rather
+    /// than appending the extras — keeps the unknown keys in the position they held.
+    carried_fields: Mutex<HashMap<TodoId, Value>>,
 }
+
+/// The keys this build owns. Anything else in a todo object belongs to another version and
+/// is written back untouched.
+const KNOWN_TODO_KEYS: [&str; 5] = ["id", "text", "done", "created_at", "completed_at"];
 
 /// Entries we could not read, each with its index in the array it came from.
 type Unparsed = Vec<(usize, Value)>;
@@ -44,6 +52,7 @@ impl FsStore {
             root: root.into(),
             read_only: Mutex::new(HashSet::new()),
             unparsed: Mutex::new(HashMap::new()),
+            carried_fields: Mutex::new(HashMap::new()),
         }
     }
 
@@ -141,7 +150,7 @@ impl FsStore {
             self.mark_read_only(Target::AllTodos);
             return Vec::new();
         };
-        let (todos, unparsed) = split_entries(&path, raw, problems);
+        let (todos, unparsed) = self.split_entries(&path, raw, problems);
         self.remember_unparsed(Target::AllTodos, unparsed);
         todos
     }
@@ -168,7 +177,7 @@ impl FsStore {
                 }
                 continue;
             };
-            let (todos, unparsed) = split_entries(&path, raw.todos, problems);
+            let (todos, unparsed) = self.split_entries(&path, raw.todos, problems);
             let file = ProjectFile {
                 id: raw.id,
                 index: raw.index,
@@ -186,6 +195,74 @@ impl FsStore {
             files.push(file);
         }
         files
+    }
+
+    /// Splits an array into the todos we understood and the entries we did not, keeping
+    /// the latter verbatim at the position they held, and remembering any todo that
+    /// carried fields this build does not know about.
+    fn split_entries(
+        &self,
+        path: &Path,
+        raw: Vec<Value>,
+        problems: &mut Vec<Problem>,
+    ) -> (Vec<Todo>, Unparsed) {
+        let mut todos: Vec<Todo> = Vec::with_capacity(raw.len());
+        let mut unparsed = Unparsed::new();
+        for (index, entry) in raw.into_iter().enumerate() {
+            match serde_json::from_value::<Todo>(entry.clone()) {
+                Ok(todo) => {
+                    if has_unknown_keys(&entry)
+                        && let Ok(mut map) = self.carried_fields.lock()
+                    {
+                        map.insert(todo.id.clone(), entry);
+                    }
+                    todos.push(todo);
+                }
+                Err(err) => {
+                    problems.push(Problem::SkippedEntry {
+                        path: path.to_path_buf(),
+                        detail: err.to_string(),
+                    });
+                    unparsed.push((index, entry));
+                }
+            }
+        }
+        (todos, unparsed)
+    }
+
+    fn carries_fields_for(&self, todos: &[Todo]) -> bool {
+        self.carried_fields
+            .lock()
+            .is_ok_and(|map| todos.iter().any(|t| map.contains_key(&t.id)))
+    }
+
+    /// The array a file will hold: current todos, any unknown fields they arrived with put
+    /// back, and the entries we could not read restored at their original index.
+    fn todo_array(
+        &self,
+        todos: &[Todo],
+        unparsed: &Unparsed,
+        target: &Target,
+    ) -> Result<Vec<Value>, StoreError> {
+        let carried = self.carried_fields.lock().ok();
+        let mut out: Vec<Value> = Vec::with_capacity(todos.len() + unparsed.len());
+        for todo in todos {
+            let encoded = serde_json::to_value(todo).map_err(|source| StoreError::Encode {
+                target: target.clone(),
+                source,
+            })?;
+            let original = carried.as_ref().and_then(|map| map.get(&todo.id));
+            out.push(
+                original
+                    .and_then(|original| merge_into_original(original, &encoded))
+                    .unwrap_or(encoded),
+            );
+        }
+        for (index, entry) in unparsed {
+            let at = (*index).min(out.len());
+            out.insert(at, entry.clone());
+        }
+        Ok(out)
     }
 
     fn remember_unparsed(&self, target: Target, unparsed: Unparsed) {
@@ -252,6 +329,9 @@ impl Store for FsStore {
         if let Ok(mut map) = self.unparsed.lock() {
             map.clear();
         }
+        if let Ok(mut map) = self.carried_fields.lock() {
+            map.clear();
+        }
         let mut problems = self.init();
         let all_todos = self.load_all_todos(&mut problems);
         let projects = self.load_projects(&mut problems);
@@ -276,10 +356,10 @@ impl Store for FsStore {
         self.refuse_if_read_only(&target)?;
         let path = self.all_todos_path();
         let unparsed = self.unparsed_for(&target);
-        if unparsed.is_empty() {
+        if unparsed.is_empty() && !self.carries_fields_for(todos) {
             write_json(&path, &target, &todos)
         } else {
-            write_json(&path, &target, &splice(todos, &unparsed, &target)?)
+            write_json(&path, &target, &self.todo_array(todos, &unparsed, &target)?)
         }
     }
 
@@ -288,7 +368,7 @@ impl Store for FsStore {
         self.refuse_if_read_only(&target)?;
         let path = self.project_path(&file.id);
         let unparsed = self.unparsed_for(&target);
-        if unparsed.is_empty() {
+        if unparsed.is_empty() && !self.carries_fields_for(&file.todos) {
             return write_json(&path, &target, file);
         }
         let out = ProjectFileOut {
@@ -296,7 +376,7 @@ impl Store for FsStore {
             index: file.index,
             name: &file.name,
             parent_id: &file.parent_id,
-            todos: splice(&file.todos, &unparsed, &target)?,
+            todos: self.todo_array(&file.todos, &unparsed, &target)?,
         };
         write_json(&path, &target, &out)
     }
@@ -432,25 +512,30 @@ fn split_entries(
     (todos, unparsed)
 }
 
-/// Rebuilds the array the file will hold: the current todos with the entries we could not
-/// read put back. An entry whose index no longer exists lands at the end rather than being
-/// dropped. `preserve_order` on `serde_json` is what keeps a carried entry's keys in their
-/// original order — the default `BTreeMap` backing would silently re-sort them.
-fn splice(todos: &[Todo], unparsed: &Unparsed, target: &Target) -> Result<Vec<Value>, StoreError> {
-    let mut out: Vec<Value> = Vec::with_capacity(todos.len() + unparsed.len());
-    for todo in todos {
-        out.push(
-            serde_json::to_value(todo).map_err(|source| StoreError::Encode {
-                target: target.clone(),
-                source,
-            })?,
-        );
+fn has_unknown_keys(entry: &Value) -> bool {
+    entry.as_object().is_some_and(|object| {
+        object
+            .keys()
+            .any(|key| !KNOWN_TODO_KEYS.contains(&key.as_str()))
+    })
+}
+
+/// Rebuilds a todo's JSON from the object it arrived as, so unknown keys keep their place,
+/// with this build's fields written over the ones it owns.
+fn merge_into_original(original: &Value, current: &Value) -> Option<Value> {
+    let mut merged = original.as_object()?.clone();
+    let current = current.as_object()?;
+    for key in KNOWN_TODO_KEYS {
+        match current.get(key) {
+            Some(value) => {
+                merged.insert(key.to_string(), value.clone());
+            }
+            None => {
+                merged.shift_remove(key);
+            }
+        }
     }
-    for (index, entry) in unparsed {
-        let at = (*index).min(out.len());
-        out.insert(at, entry.clone());
-    }
-    Ok(out)
+    Some(Value::Object(merged))
 }
 
 fn now_secs() -> u64 {
