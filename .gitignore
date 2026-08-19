@@ -5,3 +5,4 @@
 *.beam
 .elixir_ls/
 /doer
+/target

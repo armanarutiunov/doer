@@ -1,0 +1,22 @@
+[package]
+name = "doer-core"
+description = "Pure domain, layout and input logic for doer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

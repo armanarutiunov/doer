@@ -1,0 +1,30 @@
+[package]
+name = "doer"
+description = "A vim-flavoured terminal todo app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+readme = "../README.md"
+categories = ["command-line-utilities"]
+keywords = ["tui", "todo", "vim", "ratatui"]
+
+[[bin]]
+name = "doer"
+path = "src/main.rs"
+
+[dependencies]
+doer-core = { path = "../core" }
+ratatui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+tempfile.workspace = true
+
+[lints]
+workspace = true
