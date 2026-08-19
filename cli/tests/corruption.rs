@@ -86,7 +86,7 @@ fn truncated_json_is_reported_and_the_file_is_left_alone() {
 }
 
 #[test]
-fn a_wrongly_typed_field_is_reported_and_the_file_is_left_alone() {
+fn a_wrongly_typed_entry_is_carried_rather_than_dropped() {
     let home = Home::new();
     let damaged = br#"[{"id":"05dd062149b1f9a6","text":"x","done":"yes","created_at":1}]"#;
     home.write_all_todos(damaged);
@@ -94,18 +94,32 @@ fn a_wrongly_typed_field_is_reported_and_the_file_is_left_alone() {
     let store = home.store();
     let loaded = store.load();
 
-    assert!(loaded.is_degraded());
+    assert!(loaded.value.all_todos.is_empty());
     assert!(matches!(
         loaded.problems.as_slice(),
         [Problem::SkippedEntry { .. }]
     ));
+    assert!(
+        !loaded.is_degraded(),
+        "nothing was lost, so this is a note rather than damage"
+    );
+    assert!(loaded.value.read_only.is_empty(), "the file stays writable");
 
-    assert_refuses_to_save_all_todos(&store);
-    assert_eq!(home.all_todos_bytes(), damaged);
+    store.save_all_todos(&[a_todo()]).expect("save is allowed");
+
+    let after = String::from_utf8(home.all_todos_bytes()).expect("utf-8");
+    assert!(
+        after.contains(r#""done": "yes""#),
+        "the entry we could not read comes back verbatim: {after}"
+    );
+    assert!(
+        after.contains("replacement"),
+        "and the new todo is there too"
+    );
 }
 
 #[test]
-fn an_entry_with_a_null_id_is_skipped_without_losing_its_neighbours() {
+fn an_entry_with_a_null_id_is_kept_at_its_position_across_a_save() {
     let home = Home::new();
     let damaged = br#"[{"id":null,"text":"nameless"},{"id":"05dd062149b1f9a6","text":"fine"}]"#;
     home.write_all_todos(damaged);
@@ -113,14 +127,23 @@ fn an_entry_with_a_null_id_is_skipped_without_losing_its_neighbours() {
     let store = home.store();
     let loaded = store.load();
 
-    assert_eq!(loaded.value.all_todos.len(), 1, "the good entry survives");
+    assert_eq!(loaded.value.all_todos.len(), 1, "the good entry loads");
     assert_eq!(loaded.value.all_todos[0].text, "fine");
-    assert!(loaded.is_degraded());
+    assert!(!loaded.is_degraded());
 
-    // The skipped entry is exactly why this file must not be written back: a save would
-    // silently drop it.
-    assert_refuses_to_save_all_todos(&store);
-    assert_eq!(home.all_todos_bytes(), damaged);
+    store
+        .save_all_todos(&loaded.value.all_todos)
+        .expect("save is allowed");
+
+    let reloaded: Vec<serde_json::Value> =
+        serde_json::from_slice(&home.all_todos_bytes()).expect("valid json");
+    assert_eq!(reloaded.len(), 2, "both entries are on disk");
+    assert_eq!(reloaded[0]["id"], serde_json::Value::Null);
+    assert_eq!(
+        reloaded[0]["text"], "nameless",
+        "the unreadable entry is back where it was"
+    );
+    assert_eq!(reloaded[1]["text"], "fine");
 }
 
 #[test]
@@ -256,6 +279,47 @@ fn a_load_after_the_damage_is_repaired_clears_the_refusal() {
     store
         .save_all_todos(&[a_todo()])
         .expect("a repaired file is writable again");
+}
+
+#[test]
+fn a_carried_entry_keeps_its_own_key_order() {
+    let home = Home::new();
+    home.write_all_todos(br#"[{"zebra":1,"apple":2,"id":null}]"#);
+
+    let store = home.store();
+    store.load();
+    store.save_all_todos(&[]).expect("save is allowed");
+
+    let after = String::from_utf8(home.all_todos_bytes()).expect("utf-8");
+    let zebra = after.find("zebra").expect("zebra");
+    let apple = after.find("apple").expect("apple");
+    assert!(
+        zebra < apple,
+        "re-sorting a carried entry's keys would rewrite a file we do not understand: {after}"
+    );
+}
+
+#[test]
+fn an_entry_we_cannot_read_survives_being_reloaded_and_saved_again() {
+    let home = Home::new();
+    home.write_all_todos(br#"[{"id":null,"text":"nameless"}]"#);
+
+    for _ in 0..3 {
+        let store = home.store();
+        let loaded = store.load();
+        store
+            .save_all_todos(&loaded.value.all_todos)
+            .expect("save is allowed");
+    }
+
+    let entries: Vec<serde_json::Value> =
+        serde_json::from_slice(&home.all_todos_bytes()).expect("valid json");
+    assert_eq!(
+        entries.len(),
+        1,
+        "the entry is neither dropped nor duplicated"
+    );
+    assert_eq!(entries[0]["text"], "nameless");
 }
 
 #[test]

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -7,6 +7,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use doer_core::store::{Loaded, Problem, ProjectFile, Store, StoreError, StoreSnapshot, Target};
 use doer_core::{ProjectId, Todo};
+use serde::Serialize;
+use serde_json::Value;
 
 use super::atomic::write_atomic;
 
@@ -18,7 +20,14 @@ const TRASH_RETENTION_SECS: u64 = 7 * 24 * 60 * 60;
 pub struct FsStore {
     root: PathBuf,
     read_only: Mutex<HashSet<Target>>,
+    /// Array entries that are valid JSON but not todos, kept verbatim with the position
+    /// they held so a save puts them back untouched. Without this a single unreadable
+    /// entry would either be dropped on the next save or lock the file for the session.
+    unparsed: Mutex<HashMap<Target, Unparsed>>,
 }
+
+/// Entries we could not read, each with its index in the array it came from.
+type Unparsed = Vec<(usize, Value)>;
 
 impl FsStore {
     pub fn new() -> Result<Self, StoreError> {
@@ -34,6 +43,7 @@ impl FsStore {
         Self {
             root: root.into(),
             read_only: Mutex::new(HashSet::new()),
+            unparsed: Mutex::new(HashMap::new()),
         }
     }
 
@@ -127,12 +137,13 @@ impl FsStore {
         if !path.exists() {
             return Vec::new();
         }
-        let before = problems.len();
-        let todos = read_json_list::<Todo>(&path, problems);
-        if problems.len() > before {
+        let Some(raw) = read_json::<Vec<Value>>(&path, problems) else {
             self.mark_read_only(Target::AllTodos);
-        }
-        todos.unwrap_or_default()
+            return Vec::new();
+        };
+        let (todos, unparsed) = split_entries(&path, raw, problems);
+        self.remember_unparsed(Target::AllTodos, unparsed);
+        todos
     }
 
     fn load_projects(&self, problems: &mut Vec<Problem>) -> Vec<ProjectFile> {
@@ -148,9 +159,8 @@ impl FsStore {
 
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
-            let before = problems.len();
-            let Some(file) = read_json::<ProjectFile>(&path, problems) else {
-                // The id inside the file is unreadable, so fall back to the filename to
+            let Some(raw) = read_json::<RawProjectFile>(&path, problems) else {
+                // The project's own fields are unreadable, so fall back to the filename to
                 // refuse a later save — otherwise a project restored by undo could
                 // overwrite a file we never managed to read.
                 if let Some(id) = id_from_path(&path) {
@@ -158,9 +168,15 @@ impl FsStore {
                 }
                 continue;
             };
-            if problems.len() > before {
-                self.mark_read_only(Target::Project(file.id.clone()));
-            }
+            let (todos, unparsed) = split_entries(&path, raw.todos, problems);
+            let file = ProjectFile {
+                id: raw.id,
+                index: raw.index,
+                name: raw.name,
+                parent_id: raw.parent_id,
+                todos,
+            };
+            self.remember_unparsed(Target::Project(file.id.clone()), unparsed);
             if !file.id.is_canonical() {
                 problems.push(Problem::NonCanonicalId {
                     id: file.id.to_string(),
@@ -170,6 +186,24 @@ impl FsStore {
             files.push(file);
         }
         files
+    }
+
+    fn remember_unparsed(&self, target: Target, unparsed: Unparsed) {
+        if let Ok(mut map) = self.unparsed.lock() {
+            if unparsed.is_empty() {
+                map.remove(&target);
+            } else {
+                map.insert(target, unparsed);
+            }
+        }
+    }
+
+    fn unparsed_for(&self, target: &Target) -> Unparsed {
+        self.unparsed
+            .lock()
+            .ok()
+            .and_then(|map| map.get(target).cloned())
+            .unwrap_or_default()
     }
 
     fn mark_read_only(&self, target: Target) {
@@ -215,6 +249,9 @@ impl Store for FsStore {
         if let Ok(mut set) = self.read_only.lock() {
             set.clear();
         }
+        if let Ok(mut map) = self.unparsed.lock() {
+            map.clear();
+        }
         let mut problems = self.init();
         let all_todos = self.load_all_todos(&mut problems);
         let projects = self.load_projects(&mut problems);
@@ -237,13 +274,31 @@ impl Store for FsStore {
     fn save_all_todos(&self, todos: &[Todo]) -> Result<(), StoreError> {
         let target = Target::AllTodos;
         self.refuse_if_read_only(&target)?;
-        write_json(&self.all_todos_path(), &target, &todos)
+        let path = self.all_todos_path();
+        let unparsed = self.unparsed_for(&target);
+        if unparsed.is_empty() {
+            write_json(&path, &target, &todos)
+        } else {
+            write_json(&path, &target, &splice(todos, &unparsed, &target)?)
+        }
     }
 
     fn save_project(&self, file: &ProjectFile) -> Result<(), StoreError> {
         let target = Target::Project(file.id.clone());
         self.refuse_if_read_only(&target)?;
-        write_json(&self.project_path(&file.id), &target, file)
+        let path = self.project_path(&file.id);
+        let unparsed = self.unparsed_for(&target);
+        if unparsed.is_empty() {
+            return write_json(&path, &target, file);
+        }
+        let out = ProjectFileOut {
+            id: &file.id,
+            index: file.index,
+            name: &file.name,
+            parent_id: &file.parent_id,
+            todos: splice(&file.todos, &unparsed, &target)?,
+        };
+        write_json(&path, &target, &out)
     }
 
     /// Deletes by moving the file into `.trash/<unix>/`, which is crash insurance for an
@@ -328,24 +383,74 @@ fn read_json<T: serde::de::DeserializeOwned>(
     }
 }
 
-/// Decodes a JSON array element by element so one bad entry costs only that entry. Any
-/// loss at all still marks the file read-only, because a save would drop what we skipped.
-fn read_json_list<T: serde::de::DeserializeOwned>(
+/// The project's own fields decoded, with its todos still raw so they can be split into
+/// what we understood and what we are only carrying.
+#[derive(serde::Deserialize)]
+struct RawProjectFile {
+    id: ProjectId,
+    #[serde(default)]
+    index: i64,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    parent_id: Option<ProjectId>,
+    #[serde(default)]
+    todos: Vec<Value>,
+}
+
+/// Field order here is `ProjectFile`'s field order, which is the on-disk key order.
+#[derive(Serialize)]
+struct ProjectFileOut<'a> {
+    id: &'a ProjectId,
+    index: i64,
+    name: &'a str,
+    parent_id: &'a Option<ProjectId>,
+    todos: Vec<Value>,
+}
+
+/// Splits an array into the todos we understood and the entries we did not, keeping the
+/// latter verbatim at the position they held.
+fn split_entries(
     path: &Path,
+    raw: Vec<Value>,
     problems: &mut Vec<Problem>,
-) -> Option<Vec<T>> {
-    let raw = read_json::<Vec<serde_json::Value>>(path, problems)?;
-    let mut out = Vec::with_capacity(raw.len());
-    for entry in raw {
-        match serde_json::from_value(entry) {
-            Ok(value) => out.push(value),
-            Err(err) => problems.push(Problem::SkippedEntry {
-                path: path.to_path_buf(),
-                detail: err.to_string(),
-            }),
+) -> (Vec<Todo>, Unparsed) {
+    let mut todos = Vec::with_capacity(raw.len());
+    let mut unparsed = Unparsed::new();
+    for (index, entry) in raw.into_iter().enumerate() {
+        match serde_json::from_value(entry.clone()) {
+            Ok(todo) => todos.push(todo),
+            Err(err) => {
+                problems.push(Problem::SkippedEntry {
+                    path: path.to_path_buf(),
+                    detail: err.to_string(),
+                });
+                unparsed.push((index, entry));
+            }
         }
     }
-    Some(out)
+    (todos, unparsed)
+}
+
+/// Rebuilds the array the file will hold: the current todos with the entries we could not
+/// read put back. An entry whose index no longer exists lands at the end rather than being
+/// dropped. `preserve_order` on `serde_json` is what keeps a carried entry's keys in their
+/// original order — the default `BTreeMap` backing would silently re-sort them.
+fn splice(todos: &[Todo], unparsed: &Unparsed, target: &Target) -> Result<Vec<Value>, StoreError> {
+    let mut out: Vec<Value> = Vec::with_capacity(todos.len() + unparsed.len());
+    for todo in todos {
+        out.push(
+            serde_json::to_value(todo).map_err(|source| StoreError::Encode {
+                target: target.clone(),
+                source,
+            })?,
+        );
+    }
+    for (index, entry) in unparsed {
+        let at = (*index).min(out.len());
+        out.insert(at, entry.clone());
+    }
+    Ok(out)
 }
 
 fn now_secs() -> u64 {

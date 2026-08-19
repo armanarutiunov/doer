@@ -112,6 +112,8 @@ pub enum Problem {
         path: PathBuf,
         detail: String,
     },
+    /// An array element that is valid JSON but not a todo. It is preserved verbatim
+    /// rather than dropped, so this is a note, not a loss.
     SkippedEntry {
         path: PathBuf,
         detail: String,
@@ -135,12 +137,13 @@ impl Problem {
     #[must_use]
     pub fn severity(&self) -> Severity {
         match self {
-            Self::Unreadable { .. } | Self::Corrupt { .. } | Self::SkippedEntry { .. } => {
-                Severity::Error
-            }
-            Self::Migrated { .. } | Self::NonCanonicalId { .. } | Self::TrashPruneFailed { .. } => {
-                Severity::Warning
-            }
+            Self::Unreadable { .. } | Self::Corrupt { .. } => Severity::Error,
+            // A skipped entry costs nothing: the store keeps it verbatim and writes it
+            // back where it was, so the file stays writable and the load stays lossless.
+            Self::SkippedEntry { .. }
+            | Self::Migrated { .. }
+            | Self::NonCanonicalId { .. }
+            | Self::TrashPruneFailed { .. } => Severity::Warning,
         }
     }
 }
@@ -155,7 +158,11 @@ impl fmt::Display for Problem {
                 write!(f, "{} is not valid doer json: {detail}", name_of(path))
             }
             Self::SkippedEntry { path, detail } => {
-                write!(f, "{} has an unreadable entry: {detail}", name_of(path))
+                write!(
+                    f,
+                    "{} has an entry doer cannot read: {detail}",
+                    name_of(path)
+                )
             }
             Self::Migrated { from, to } => {
                 write!(f, "migrated {} to {}", name_of(from), name_of(to))
@@ -179,6 +186,71 @@ fn name_of(path: &Path) -> String {
         || path.display().to_string(),
         |n| n.to_string_lossy().into(),
     )
+}
+
+/// The user-facing lines for a load's problems: one per file, aggregated, with no serde
+/// detail — line and column numbers mean nothing to someone who just opened a todo list.
+/// The `Display` impl keeps the detail for a debug dump.
+#[must_use]
+pub fn toasts(problems: &[Problem]) -> Vec<(String, Severity)> {
+    let mut skipped: Vec<(String, usize)> = Vec::new();
+    let mut out = Vec::new();
+    for problem in problems {
+        match problem {
+            Problem::SkippedEntry { path, .. } => {
+                let name = name_of(path);
+                match skipped.iter_mut().find(|(n, _)| *n == name) {
+                    Some((_, count)) => *count += 1,
+                    None => skipped.push((name, 1)),
+                }
+            }
+            Problem::Unreadable { path, .. } | Problem::Corrupt { path, .. } => out.push((
+                format!(
+                    "-- {} couldn't be read; changes here won't be saved --",
+                    name_of(path)
+                ),
+                Severity::Error,
+            )),
+            Problem::Migrated { .. }
+            | Problem::NonCanonicalId { .. }
+            | Problem::TrashPruneFailed { .. } => {}
+        }
+    }
+    for (name, count) in skipped {
+        let text = if count == 1 {
+            format!("-- {name}: 1 entry doer can't read, kept as-is --")
+        } else {
+            format!("-- {name}: {count} entries doer can't read, kept as-is --")
+        };
+        out.push((text, Severity::Warning));
+    }
+    out
+}
+
+impl StoreError {
+    /// The user-facing line for a save that was refused or failed.
+    #[must_use]
+    pub fn toast(&self) -> String {
+        match self {
+            Self::RefusedReadOnly { target } => {
+                format!("-- not saving {}: it failed to load --", target.file_name())
+            }
+            Self::Write { path, .. } => {
+                format!("-- couldn't save {} --", name_of(path))
+            }
+            _ => format!("-- {self} --"),
+        }
+    }
+}
+
+impl Target {
+    #[must_use]
+    pub fn file_name(&self) -> String {
+        match self {
+            Self::AllTodos => "all-todos.json".to_string(),
+            Self::Project(id) => format!("{id}.json"),
+        }
+    }
 }
 
 /// A value plus everything that went wrong producing it.
@@ -433,5 +505,83 @@ mod tests {
         store.fail_next(Target::AllTodos);
         assert!(store.save_all_todos(&[]).is_err());
         assert!(store.save_all_todos(&[]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod toast_tests {
+    use super::*;
+
+    fn skipped(name: &str) -> Problem {
+        Problem::SkippedEntry {
+            path: PathBuf::from(format!("/home/x/.doer/{name}")),
+            detail: "invalid type: null, expected a string at line 1 column 9".into(),
+        }
+    }
+
+    #[test]
+    fn one_unreadable_entry_reads_as_a_singular_warning() {
+        let lines = toasts(&[skipped("all-todos.json")]);
+        assert_eq!(
+            lines,
+            [(
+                "-- all-todos.json: 1 entry doer can't read, kept as-is --".to_string(),
+                Severity::Warning
+            )]
+        );
+    }
+
+    #[test]
+    fn several_unreadable_entries_in_one_file_make_one_plural_warning() {
+        let lines = toasts(&[skipped("all-todos.json"), skipped("all-todos.json")]);
+        assert_eq!(
+            lines,
+            [(
+                "-- all-todos.json: 2 entries doer can't read, kept as-is --".to_string(),
+                Severity::Warning
+            )]
+        );
+    }
+
+    #[test]
+    fn each_file_gets_its_own_line() {
+        let lines = toasts(&[skipped("a.json"), skipped("b.json"), skipped("a.json")]);
+        assert_eq!(lines.len(), 2);
+    }
+
+    #[test]
+    fn a_file_that_would_not_load_says_that_changes_will_not_be_saved() {
+        let lines = toasts(&[Problem::Corrupt {
+            path: PathBuf::from("/home/x/.doer/projects/8257339108cf0e12.json"),
+            detail: "EOF while parsing".into(),
+        }]);
+        assert_eq!(
+            lines,
+            [(
+                "-- 8257339108cf0e12.json couldn't be read; changes here won't be saved --"
+                    .to_string(),
+                Severity::Error
+            )]
+        );
+    }
+
+    #[test]
+    fn housekeeping_notes_are_not_worth_a_toast() {
+        let lines = toasts(&[Problem::Migrated {
+            from: PathBuf::from("todos.json"),
+            to: PathBuf::from("all-todos.json"),
+        }]);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn a_refused_save_names_the_file_and_never_the_serde_detail() {
+        let err = StoreError::RefusedReadOnly {
+            target: Target::Project(ProjectId::from("8257339108cf0e12")),
+        };
+        assert_eq!(
+            err.toast(),
+            "-- not saving 8257339108cf0e12.json: it failed to load --"
+        );
     }
 }

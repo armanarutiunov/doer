@@ -286,3 +286,47 @@ fn walk(dir: &Path) -> Vec<PathBuf> {
     }
     out
 }
+
+#[test]
+fn an_unreadable_todo_inside_a_project_does_not_lock_the_project() {
+    let dir = home();
+    fs::create_dir_all(dir.path().join("projects")).expect("projects dir");
+    fs::write(
+        dir.path().join("projects/8257339108cf0e12.json"),
+        br#"{"id":"8257339108cf0e12","index":0,"name":"work","parent_id":null,"todos":[{"id":null},{"id":"05dd062149b1f9a6","text":"real","done":false,"created_at":1,"completed_at":null}]}"#,
+    )
+    .expect("write project");
+
+    let store = FsStore::with_root(dir.path());
+    let loaded = store.load();
+
+    assert!(!loaded.is_degraded(), "{:?}", loaded.problems);
+    assert!(loaded.value.read_only.is_empty());
+    let mut file = loaded.value.projects[0].clone();
+    assert_eq!(file.todos.len(), 1);
+
+    file.todos.push(doer_core::Todo {
+        id: doer_core::TodoId::from("ffffffffffffffff"),
+        text: "added later".into(),
+        done: false,
+        created_at: 2,
+        completed_at: None,
+    });
+    store.save_project(&file).expect("save is allowed");
+
+    let reloaded = FsStore::with_root(dir.path()).load();
+    assert_eq!(
+        reloaded.value.projects[0].todos.len(),
+        2,
+        "the new todo persisted rather than being lost to a locked file"
+    );
+    let raw: serde_json::Value = serde_json::from_slice(
+        &fs::read(dir.path().join("projects/8257339108cf0e12.json")).expect("read"),
+    )
+    .expect("valid json");
+    assert_eq!(
+        raw["todos"].as_array().map(Vec::len),
+        Some(3),
+        "the entry we could not read is still on disk alongside both todos"
+    );
+}
