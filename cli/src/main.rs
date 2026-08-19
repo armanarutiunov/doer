@@ -5,7 +5,8 @@ use doer_core::action::Action;
 use doer_core::app::{AppState, Effect};
 use doer_core::input::{self, KeyCode, KeyPress, Mods};
 use doer_core::layout::Geometry;
-use doer_core::store::{ProjectFile, Store, Target};
+use doer_core::mode::{Focus, MainMode, SidebarMode};
+use doer_core::store::{ProjectFile, Store, StoreError, Target};
 use doer_core::{ProjectId, Todo};
 use ratatui::crossterm::event::{KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
 
@@ -78,6 +79,7 @@ fn run() -> anyhow::Result<()> {
     }
 
     let mut dirty = true;
+    let mut saving_broken = false;
     loop {
         if dirty {
             let moment = now();
@@ -95,10 +97,12 @@ fn run() -> anyhow::Result<()> {
         let moment = now();
         for input in batch {
             for action in actions_for(input, &app) {
+                // reduce puts its saves and deletes before Quit, which is what makes
+                // returning from the middle of this loop safe. Anything emitted after a
+                // Quit would be dropped.
                 for effect in doer_core::app::reduce(&mut app, &action, moment) {
                     if matches!(effect, Effect::Quit) {
-                        saver.shutdown(FLUSH_TIMEOUT);
-                        return Ok(());
+                        return finish(saver, FLUSH_TIMEOUT);
                     }
                     apply(&effect, &app, &saver, &events);
                 }
@@ -110,6 +114,16 @@ fn run() -> anyhow::Result<()> {
         // stays dirty and the next edit retries it. A standing failure is cleared only by
         // a write that actually got through -- not by the next keystroke, or the user
         // could quit on a stale reassurance.
+        // A panic on the save thread would otherwise be invisible: the app keeps taking
+        // edits, every write fails silently, and the reports channel is gone so nothing
+        // ever reports it.
+        if saver.has_died() && !saving_broken {
+            saving_broken = true;
+            let effect = app.save_failed(&StoreError::WriterStopped);
+            apply(&effect, &app, &saver, &events);
+            dirty = true;
+        }
+
         for report in saver.reports().collect::<Vec<_>>() {
             match report {
                 Report::Wrote => app.save_succeeded(),
@@ -122,8 +136,16 @@ fn run() -> anyhow::Result<()> {
         }
     }
 
-    saver.shutdown(FLUSH_TIMEOUT);
-    Ok(())
+    finish(saver, FLUSH_TIMEOUT)
+}
+
+/// Flushes, and says so if the bounded wait ran out. Exiting quietly on a timeout would
+/// tell the user their last edits were saved when they were not.
+fn finish(saver: Saver, timeout: Duration) -> anyhow::Result<()> {
+    if saver.shutdown(timeout) {
+        return Ok(());
+    }
+    anyhow::bail!("gave up waiting for the disk after {timeout:?}; some edits may not be saved")
 }
 
 fn apply(effect: &Effect, app: &AppState, saver: &Saver, events: &Events) {
@@ -131,11 +153,12 @@ fn apply(effect: &Effect, app: &AppState, saver: &Saver, events: &Events) {
         Effect::Save(Target::AllTodos) => {
             saver.send(Job::AllTodos(all_todos(app)));
         }
-        Effect::Save(Target::Project(id)) => {
-            if let Some(file) = project_file(app, id) {
-                saver.send(Job::Project(Box::new(file)));
-            }
-        }
+        Effect::Save(Target::Project(id)) => match project_file(app, id) {
+            Some(file) => saver.send(Job::Project(Box::new(file))),
+            // The dirty set cancels a save for a project that has been deleted, so
+            // reaching here means the two disagree and a write has been lost.
+            None => debug_assert!(false, "save requested for a project that is gone: {id}"),
+        },
         Effect::DeleteProject(id) => saver.send(Job::Delete(id.clone())),
         Effect::Toast(toast) => {
             if let Some(ttl) = toast.ttl_ms {
@@ -185,6 +208,14 @@ fn actions_for(input: Input, app: &AppState) -> Vec<Action> {
         Input::DayChanged => vec![Action::DayChanged],
         Input::ToastExpire(seq) => vec![Action::ToastExpire(seq)],
     }
+}
+
+/// Whether a paste would be read as text rather than as a run of keybindings.
+fn accepts_text(app: &AppState) -> bool {
+    matches!(
+        app.focus(),
+        Focus::Main(MainMode::Insert | MainMode::Search) | Focus::Sidebar(SidebarMode::Insert)
+    )
 }
 
 /// Shift is dropped deliberately: the character already carries the case, and terminals
