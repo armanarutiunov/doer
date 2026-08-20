@@ -104,8 +104,27 @@ jobs:
         env:
           TAG: ${{ needs.preflight.outputs.tag }}
           VERSION: ${{ needs.preflight.outputs.version }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Git reports a rejected credential as "Invalid username or token", which reads
+          # like the wrong password when it is usually a token with no access to this
+          # repository. Say which it is before trying.
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is empty or unset. Set it with:"
+            echo "::error::  gh secret set HOMEBREW_TAP_TOKEN --repo armanarutiunov/doer"
+            exit 1
+          fi
+          if ! curl -fsS -o /dev/null -H "Authorization: Bearer ${TAP_TOKEN}" \
+               https://api.github.com/repos/armanarutiunov/homebrew-doer; then
+            echo "::error::HOMEBREW_TAP_TOKEN cannot read armanarutiunov/homebrew-doer."
+            echo "::error::A fine-grained token needs that repository selected under"
+            echo "::error::Repository access, plus Contents: Read and write. A classic"
+            echo "::error::token needs the repo scope. Check it has not expired."
+            exit 1
+          fi
+
           BASE="https://github.com/armanarutiunov/doer/releases/download/${TAG}"
 
           sha_of() { cut -d' ' -f1 < "doer-$1.tar.gz.sha256"; }
@@ -114,8 +133,11 @@ jobs:
           ARM_LINUX=$(sha_of aarch64-unknown-linux-gnu)
           X86_LINUX=$(sha_of x86_64-unknown-linux-gnu)
 
-          git clone "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiunov/homebrew-doer.git" /tmp/tap
+          # The tap is public, so the clone needs no credential; only the push does.
+          git clone https://github.com/armanarutiunov/homebrew-doer.git /tmp/tap
           cd /tmp/tap
+          git remote set-url origin \
+            "https://x-access-token:${TAP_TOKEN}@github.com/armanarutiunov/homebrew-doer.git"
           mkdir -p Formula
 
           cat > Formula/doer.rb << EOF
