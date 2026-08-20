@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use doer::term;
-use doer::writer::{Job, Saver};
 use doer_core::store::{Loaded, ProjectFile, Store, StoreError, StoreSnapshot, Target};
 use doer_core::{ProjectId, Todo, TodoId};
+use doer_tui::term;
+use doer_tui::writer::{Job, Saver};
 
 /// Records what reached the store, from a handle the test keeps after the `Saver` has
 /// taken ownership of the store itself.

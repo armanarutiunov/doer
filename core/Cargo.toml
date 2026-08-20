@@ -6,6 +6,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "../README.md"
+categories = ["command-line-utilities"]
+keywords = ["tui", "todo", "layout", "ratatui"]
 
 [dependencies]
 serde.workspace = true

@@ -10,6 +10,18 @@ A vim-flavoured terminal todo app, built with Rust and ratatui.
 brew install armanarutiunov/doer/doer
 ```
 
+That taps and installs in one step, and ships a prebuilt binary rather than compiling
+on your machine. Once tapped, `brew upgrade doer` is enough.
+
+### Cargo
+
+```sh
+cargo install doer-tui
+```
+
+The crate is `doer-tui` because `doer` on crates.io belongs to an unrelated tool. The
+binary it installs is still called `doer`.
+
 ### From source
 
 Requires a Rust toolchain (1.88 or newer).

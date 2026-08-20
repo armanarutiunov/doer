@@ -1,5 +1,5 @@
 [package]
-name = "doer"
+name = "doer-tui"
 description = "A vim-flavoured terminal todo app"
 version.workspace = true
 edition.workspace = true
@@ -10,12 +10,14 @@ readme = "../README.md"
 categories = ["command-line-utilities"]
 keywords = ["tui", "todo", "vim", "ratatui"]
 
+# The crate is doer-tui because crates.io's `doer` is taken by an unrelated tool, but
+# the binary anyone installs is still called doer.
 [[bin]]
 name = "doer"
 path = "src/main.rs"
 
 [dependencies]
-doer-core = { path = "../core" }
+doer-core = { path = "../core", version = "0.3.0" }
 ratatui.workspace = true
 serde.workspace = true
 serde_json.workspace = true

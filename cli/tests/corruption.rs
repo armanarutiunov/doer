@@ -8,9 +8,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::Path;
 
-use doer::store::FsStore;
 use doer_core::store::{Problem, ProjectFile, Severity, Store, StoreError, Target};
 use doer_core::{ProjectId, Todo};
+use doer_tui::store::FsStore;
 
 struct Home {
     dir: tempfile::TempDir,

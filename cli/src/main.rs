@@ -10,12 +10,12 @@ use doer_core::store::{ProjectFile, Store, Target};
 use doer_core::{ProjectId, Todo};
 use ratatui::crossterm::event::{KeyCode as CtKeyCode, KeyEvent, KeyModifiers};
 
-use doer::event::{Events, Input};
-use doer::store::FsStore;
-use doer::term::{self, TerminalGuard};
-use doer::ui;
-use doer::ui::theme::{ColorDepth, Theme};
-use doer::writer::{Job, Report, Saver};
+use doer_tui::event::{Events, Input};
+use doer_tui::store::FsStore;
+use doer_tui::term::{self, TerminalGuard};
+use doer_tui::ui;
+use doer_tui::ui::theme::{ColorDepth, Theme};
+use doer_tui::writer::{Job, Report, Saver};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
