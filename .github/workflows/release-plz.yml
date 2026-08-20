@@ -1,0 +1,45 @@
+name: Release PR
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  # Opens or updates a pull request carrying the version bump and the changelog. Merging
+  # that pull request is what releases; nothing ships from an ordinary merge to main.
+  release-pr:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Tags whatever version is on main and has not been released yet, which is how merging
+  # the release pull request ships. The tag then triggers release.yml, which builds the
+  # binaries, publishes the GitHub release and rewrites the Homebrew formula.
+  release:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: release-plz-release-${{ github.ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: release-plz/action@v0
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -102,6 +102,20 @@ release, run `brew audit --new --strict --online doer`, and open a PR adding
 terminal; with none attached it fails to start rather than hanging, which is what makes
 it testable in a sandbox.
 
+Versions, the changelog and the tag are release-plz's job (`release-plz.toml`,
+`.github/workflows/release-plz.yml`). An ordinary merge to main opens or updates a release
+pull request; merging THAT is what ships. It creates one tag, `v{version}`, rather than
+one per crate, and does not create the GitHub release itself -- `release.yml` owns the
+binaries, the release and the formula, and two things creating releases would fight.
+
+Two constraints found by running it rather than reading about it. It refuses to diff a
+package the registry has never seen while a matching tag exists, which is why `publish`
+is `false` until both crates are on crates.io; flip it after the first manual publish and
+release-plz will publish for you. And it derives the size of the bump from
+conventional-commit prefixes, which this repository does not use, so every bump is a patch
+and the changelog groups everything under "Other". Write `feat:` if you want a minor, or
+bump the version by hand.
+
 crates.io wants the crates in dependency order, `doer-core` before `doer-tui`, and a path
 dependency has to carry a version or the published copy cannot resolve it. The binary
 crate is `doer-tui` because `doer` on crates.io is an unrelated tool from 2023 and a
