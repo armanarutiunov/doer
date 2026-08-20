@@ -114,6 +114,12 @@ dependency, which crates.io requires and cargo refuses to leave stale -- via
 A silent miss there would tag a version the binary does not report, and the Homebrew
 formula's own test compares exactly those two things.
 
+The release also publishes to crates.io when `CARGO_REGISTRY_TOKEN` is set, and says so
+and carries on when it is not: an unverified email or a registry backlog should not stop
+the binaries and the formula going out. Re-running a release that already published is
+not an error -- the job asks the registry whether that version exists rather than
+swallowing every failure alike.
+
 crates.io wants the crates in dependency order, `doer-core` before `doer-tui`, and a path
 dependency has to carry a version or the published copy cannot resolve it. The binary
 crate is `doer-tui` because `doer` on crates.io is an unrelated tool from 2023 and a
