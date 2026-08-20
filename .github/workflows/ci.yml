@@ -34,13 +34,25 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --all-targets --target ${{ matrix.target }}
+
+  # The x86 macOS binary is released, so it has to keep compiling. It is built and not
+  # tested because GitHub retired its Intel macOS runners, leaving nothing to run it on.
+  # Cross-compiling from the arm runner is what the release does as well.
+  build-x86-macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --target x86_64-apple-darwin
 
   # rust-version in Cargo.toml is a promise to anyone building from source, so it is
   # checked rather than asserted. Let-chains put the real floor at 1.88.

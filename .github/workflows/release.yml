@@ -15,7 +15,9 @@ jobs:
       matrix:
         include:
           - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          # Cross-compiled from the arm runner: GitHub retired the Intel macOS runners,
+          # and a pure-Rust binary needs no host of its own architecture to be built.
+          - { os: macos-14, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     runs-on: ${{ matrix.os }}
