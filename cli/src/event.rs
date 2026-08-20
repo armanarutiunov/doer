@@ -1,0 +1,143 @@
+//! Input plumbing: one channel carrying keys, resizes and timer wakeups.
+//!
+//! There is no periodic tick. The terminal size arrives as `Resize` (crossterm turns
+//! SIGWINCH into an event), age labels change only at a UTC day boundary, and a toast
+//! expires on its own one-shot deadline — so an idle app wakes up at most once a day.
+
+use std::sync::mpsc::{self, Receiver, RecvError, Sender};
+use std::thread;
+use std::time::Duration;
+
+use doer_core::todo::SECONDS_PER_DAY;
+use ratatui::crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+
+#[derive(Clone, Debug)]
+pub enum Input {
+    Key(KeyEvent),
+    Paste(String),
+    Resize(u16, u16),
+    /// A UTC day boundary passed: the "Xd" age labels need recomputing.
+    DayChanged,
+    /// The toast with this sequence number reached its TTL. A newer toast supersedes an
+    /// older one by having a different seq, so no timer ever needs cancelling.
+    ToastExpire(u64),
+    /// The terminal will deliver no more input -- stdin closed, or the tty went away.
+    /// Sent explicitly rather than left to the channel disconnecting, because `Events`
+    /// holds a sender of its own for the timers, so a disconnect can never happen.
+    /// Without this the app would block in `next` forever, holding raw mode.
+    Closed,
+}
+
+pub struct Events {
+    rx: Receiver<Input>,
+    tx: Sender<Input>,
+}
+
+impl Events {
+    /// Spawns the reader and the day-boundary timer. Both are detached: `event::read`
+    /// is uninterruptible, so joining it would hang until the user happened to press a
+    /// key. They exit on their own once the receiver drops.
+    ///
+    /// `clock` reads the wall clock in unix seconds. The timer holds it rather than a
+    /// timestamp because it has to ask again after every wake.
+    #[must_use]
+    pub fn start(clock: fn() -> i64) -> Self {
+        let (tx, rx) = mpsc::channel();
+        spawn_reader(tx.clone());
+        spawn_day_timer(tx.clone(), clock);
+        Self { rx, tx }
+    }
+
+    /// Blocks until something happens. `Input::Closed` is how the end of input arrives;
+    /// an `Err` here would mean every sender including our own has gone, which cannot
+    /// happen, and is treated the same way for safety.
+    pub fn next(&self) -> Result<Input, RecvError> {
+        self.rx.recv()
+    }
+
+    /// Everything already queued behind the last `next`. Draining a burst — held `j`,
+    /// a dragged window corner — into one batch collapses it into a single redraw.
+    pub fn drain(&self) -> impl Iterator<Item = Input> + '_ {
+        self.rx.try_iter()
+    }
+
+    pub fn arm_toast(&self, seq: u64, ttl: Duration) {
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            thread::sleep(ttl);
+            let _ = tx.send(Input::ToastExpire(seq));
+        });
+    }
+}
+
+fn spawn_reader(tx: Sender<Input>) {
+    thread::spawn(move || {
+        loop {
+            let input = match event::read() {
+                // Release and Repeat would double every keystroke on terminals that
+                // report them.
+                Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => Input::Key(key),
+                Ok(Event::Paste(text)) => Input::Paste(text),
+                Ok(Event::Resize(w, h)) => Input::Resize(w, h),
+                Ok(_) => continue,
+                Err(_) => {
+                    let _ = tx.send(Input::Closed);
+                    return;
+                }
+            };
+            if tx.send(input).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Sleeps to the next boundary rather than ticking.
+///
+/// The wall clock is read again after every wake, never advanced by the amount slept:
+/// a suspended machine resumes hours later than it went to sleep, and a timer that
+/// trusted its own arithmetic would keep firing at the resume time for the life of the
+/// process, leaving the age labels stale until then.
+fn spawn_day_timer(tx: Sender<Input>, clock: fn() -> i64) {
+    thread::spawn(move || {
+        loop {
+            thread::sleep(Duration::from_secs(seconds_until_next_day(clock())));
+            if tx.send(Input::DayChanged).is_err() {
+                return;
+            }
+        }
+    });
+}
+
+/// Age labels are `unix / 86_400`, so the boundary that matters is UTC midnight.
+fn seconds_until_next_day(now: i64) -> u64 {
+    let since_midnight = now.rem_euclid(SECONDS_PER_DAY);
+    u64::try_from(SECONDS_PER_DAY - since_midnight).unwrap_or(86_400)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn day_timer_waits_to_the_next_utc_midnight() {
+        assert_eq!(seconds_until_next_day(0), 86_400);
+        assert_eq!(seconds_until_next_day(1), 86_399);
+        assert_eq!(seconds_until_next_day(86_399), 1);
+        assert_eq!(seconds_until_next_day(86_400), 86_400);
+    }
+
+    #[test]
+    fn a_wake_after_a_suspend_targets_the_next_real_midnight() {
+        // Slept at 23:00, woke at 09:00 the next day. Asked with the clock as it now
+        // reads, the next wait is the 15 hours to the coming midnight -- not the full
+        // day that advancing the previous target by the time slept would have given.
+        let resumed = 86_400 + 9 * 3_600;
+        assert_eq!(seconds_until_next_day(resumed), 15 * 3_600);
+    }
+
+    #[test]
+    fn a_pre_epoch_clock_still_yields_a_positive_wait() {
+        assert_eq!(seconds_until_next_day(-1), 1);
+    }
+}

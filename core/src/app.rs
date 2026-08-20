@@ -1,0 +1,1506 @@
+//! The reducer: every state change in the app happens here, and nothing here
+//! touches the outside world.
+//!
+//! `reduce` returns [`Effect`]s describing the IO the shell should perform. Saving,
+//! quitting and toast timers are all descriptions, so a test can drive the entire
+//! application by feeding it actions and reading state back.
+
+use crate::action::{Action, Dir, EditKey, Motion, ResolveCursor, SidebarAction};
+use crate::dirty::{DirtySet, Touched, target_of};
+use crate::display::{DisplayList, ViewId};
+use crate::id::{ProjectId, TodoId};
+use crate::layout::{Geometry, Layout, LayoutHints, adjust_scroll, clamp_scroll};
+use crate::mode::{Focus, MainMode, SidebarMode};
+use crate::project::Project;
+use crate::reorder::{self, Blocked, Reorder};
+use crate::store::{Loaded, ProjectFile, StoreError, StoreSnapshot, Target};
+use crate::text::TextInput;
+use crate::todo::Todo;
+use crate::undo::{Snapshot, UndoStack};
+use crate::workspace::{Bucket, Workspace};
+
+pub const TOAST_TTL_MS: u64 = 2_500;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToastLevel {
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Toast {
+    pub text: String,
+    pub level: ToastLevel,
+    /// `None` never expires on its own. A failed save stays on screen until a later
+    /// save succeeds, because a message the user missed is a message that lied.
+    pub ttl_ms: Option<u64>,
+    pub seq: u64,
+}
+
+/// A mutation was refused because it would have written a file we could not read.
+/// Carries the file so the message can name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Locked(pub Target);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Effect {
+    Save(Target),
+    DeleteProject(ProjectId),
+    Toast(Toast),
+    Quit,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Pane {
+    #[default]
+    Main,
+    Sidebar,
+}
+
+/// The sidebar cursor is an identity, not a row number, so a cascading project
+/// delete cannot leave it pointing at whatever slid into that slot.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum SidebarCursor {
+    #[default]
+    All,
+    Project(ProjectId),
+}
+
+#[derive(Clone, Debug)]
+pub enum EditTarget {
+    /// A todo already inserted into the list so it renders in place while being
+    /// typed. Abandoning the edit removes it again.
+    New(TodoId),
+    Existing {
+        id: TodoId,
+        original: String,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct Editing {
+    pub target: EditTarget,
+    pub input: TextInput,
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum MainState {
+    #[default]
+    Normal,
+    Insert(Editing),
+    Visual {
+        anchor: TodoId,
+    },
+    Search(TextInput),
+    SearchNav {
+        query: String,
+    },
+}
+
+impl MainState {
+    #[must_use]
+    pub fn mode(&self) -> MainMode {
+        match self {
+            Self::Normal => MainMode::Normal,
+            Self::Insert(_) => MainMode::Insert,
+            Self::Visual { .. } => MainMode::Visual,
+            Self::Search(_) => MainMode::Search,
+            Self::SearchNav { .. } => MainMode::SearchNav,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum ProjectEdit {
+    NewTopLevel,
+    NewChild(ProjectId),
+    Rename(ProjectId),
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum SidebarState {
+    #[default]
+    Normal,
+    Insert {
+        target: ProjectEdit,
+        input: TextInput,
+    },
+    ConfirmDelete(ProjectId),
+}
+
+impl SidebarState {
+    #[must_use]
+    pub fn mode(&self) -> SidebarMode {
+        match self {
+            Self::Normal => SidebarMode::Normal,
+            Self::Insert { .. } => SidebarMode::Insert,
+            Self::ConfirmDelete(_) => SidebarMode::ConfirmDelete,
+        }
+    }
+}
+
+/// Cursor, scroll and search survive a trip to another view and back.
+#[derive(Clone, Debug, Default)]
+struct ViewState {
+    cursor: Option<TodoId>,
+    cursor_hint: usize,
+    scroll: usize,
+    search: String,
+}
+
+pub struct AppState {
+    pub ws: Workspace,
+    pub view: ViewId,
+    views: Vec<(ViewId, ViewState)>,
+
+    pub pane: Pane,
+    pub main: MainState,
+    pub sidebar: SidebarState,
+    pub sidebar_cursor: SidebarCursor,
+
+    pub cursor: Option<TodoId>,
+    /// Where the cursor was last seen in display order. Only consulted when the
+    /// todo it pointed at no longer exists.
+    cursor_hint: usize,
+    pub scroll: usize,
+
+    pub geo: Geometry,
+    pub help: bool,
+    pub toast: Option<Toast>,
+    toast_seq: u64,
+    /// Files whose last write failed. Tracked per file, because a success elsewhere is
+    /// not evidence about this one.
+    failed_saves: Vec<Target>,
+    /// Set once the writer has died. Unlike a failed file this can never be cleared, so a
+    /// success arriving afterwards must not retract the warning.
+    saving_stopped: bool,
+
+    pub undo: UndoStack,
+    dirty: DirtySet,
+    /// Set while a new todo is being typed: the insert and the text that follows it
+    /// collapse into a single undo entry, and abandoning the edit undoes both.
+    session: Option<Vec<Target>>,
+    quit_armed: bool,
+}
+
+impl AppState {
+    #[must_use]
+    pub fn new(ws: Workspace, geo: Geometry) -> Self {
+        let mut state = Self {
+            failed_saves: Vec::new(),
+            saving_stopped: false,
+            ws,
+            view: ViewId::All,
+            views: Vec::new(),
+            pane: Pane::Main,
+            main: MainState::Normal,
+            sidebar: SidebarState::Normal,
+            sidebar_cursor: SidebarCursor::All,
+            cursor: None,
+            cursor_hint: 0,
+            scroll: 0,
+            geo,
+            help: false,
+            toast: None,
+            toast_seq: 0,
+            undo: UndoStack::default(),
+            dirty: DirtySet::default(),
+            session: None,
+            quit_armed: false,
+        };
+        state.cursor = state.order_ids().first().cloned();
+        state
+    }
+
+    /// Builds the state a freshly loaded store implies, including the toast that
+    /// reports anything the load could not make sense of.
+    #[must_use]
+    pub fn from_loaded(loaded: Loaded<StoreSnapshot>, geo: Geometry) -> (Self, Vec<Effect>) {
+        let (snapshot, problems) = loaded.into_parts();
+        let mut ws = workspace_from(&snapshot);
+        for target in &snapshot.read_only {
+            ws.mark_read_only(match target {
+                Target::AllTodos => Bucket::All,
+                Target::Project(id) => Bucket::Project(id.clone()),
+            });
+        }
+
+        let mut state = Self::new(ws, geo);
+        // Errors last, so the one that does not auto-expire is the one left standing.
+        let mut lines = crate::store::toasts(&problems);
+        lines.sort_by_key(|(_, severity)| *severity == crate::store::Severity::Error);
+        let effects = lines
+            .into_iter()
+            .map(|(text, severity)| Effect::Toast(state.new_toast(text, toast_level(severity))))
+            .collect();
+        (state, effects)
+    }
+
+    /// The shell reports a failed write back through here so the message, the quit
+    /// guard and the still-dirty target all stay in one place.
+    pub fn save_failed(&mut self, target: Option<Target>, error: &StoreError) -> Effect {
+        if let Some(target) = target
+            && !self.failed_saves.contains(&target)
+        {
+            self.failed_saves.push(target);
+        }
+        Effect::Toast(self.new_toast(error.toast(), ToastLevel::Error))
+    }
+
+    /// Clears a standing save error once THAT file gets written. A success elsewhere
+    /// says nothing about the file that failed, and clearing on it would retract the
+    /// warning while the stale data is still on disk.
+    pub fn save_succeeded(&mut self, target: &Target) {
+        self.failed_saves.retain(|failed| failed != target);
+        if !self.has_failed_saves() && self.has_error_toast() {
+            self.toast = None;
+        }
+    }
+
+    /// The thread that performs writes has died, so nothing will be saved again. Arms the
+    /// quit guard by itself: there is no target to blame, and every future edit is lost.
+    pub fn saving_stopped(&mut self) -> Effect {
+        self.saving_stopped = true;
+        Effect::Toast(self.new_toast(StoreError::WriterStopped.toast(), ToastLevel::Error))
+    }
+
+    /// True while anything is known to be unsaved. The quit guard reads this rather than
+    /// the toast, so a message that has been superseded cannot make an unsaved file look
+    /// saved.
+    #[must_use]
+    pub fn has_failed_saves(&self) -> bool {
+        self.saving_stopped || !self.failed_saves.is_empty()
+    }
+
+    /// Kept on `geo` alone, because that is what the layout reads; a second copy on
+    /// `AppState` would be one more thing to hold in step by hand.
+    #[must_use]
+    pub fn sidebar_open(&self) -> bool {
+        self.geo.sidebar_open
+    }
+
+    #[must_use]
+    pub fn focus(&self) -> Focus {
+        match self.pane {
+            Pane::Main => Focus::Main(self.main.mode()),
+            Pane::Sidebar => Focus::Sidebar(self.sidebar.mode()),
+        }
+    }
+
+    #[must_use]
+    pub fn input_context(&self) -> crate::input::InputContext {
+        crate::input::InputContext {
+            focus: self.focus(),
+            sidebar_open: self.sidebar_open(),
+            help: self.help,
+        }
+    }
+
+    /// The live search query, which is also what filters the display list.
+    #[must_use]
+    pub fn filter(&self) -> Option<&str> {
+        match &self.main {
+            MainState::Search(input) => Some(input.text()),
+            MainState::SearchNav { query } => Some(query.as_str()),
+            _ => None,
+        }
+    }
+
+    /// `(done, total)` for the mode bar, over the current view and ignoring any
+    /// active search: the count describes the list, not the filter.
+    #[must_use]
+    pub fn counts(&self) -> (usize, usize) {
+        let all = DisplayList::build(&self.ws, &self.view, None);
+        (all.completed.len(), all.len())
+    }
+
+    #[must_use]
+    pub fn display(&self) -> DisplayList<'_> {
+        DisplayList::build(&self.ws, &self.view, self.filter())
+    }
+
+    #[must_use]
+    pub fn layout_hints(&self) -> LayoutHints<'_> {
+        LayoutHints {
+            editing: match &self.main {
+                MainState::Insert(editing) => Some((
+                    editing.id().clone(),
+                    editing.input.text(),
+                    editing.input.caret_col(),
+                )),
+                _ => None,
+            },
+        }
+    }
+
+    #[must_use]
+    pub fn layout(&self, now: i64) -> Layout {
+        Layout::build(
+            &self.ws,
+            &self.display(),
+            &self.view,
+            &self.geo,
+            &self.layout_hints(),
+            now,
+        )
+    }
+
+    #[must_use]
+    pub fn selection(&self) -> Option<std::ops::Range<usize>> {
+        let cursor = self.cursor_index()?;
+        match &self.main {
+            MainState::Visual { anchor } => {
+                let ids = self.order_ids();
+                let anchor = ids.iter().position(|id| id == anchor)?;
+                Some(anchor.min(cursor)..anchor.max(cursor) + 1)
+            }
+            _ => Some(cursor..cursor + 1),
+        }
+    }
+
+    #[must_use]
+    pub fn selected_ids(&self) -> Vec<TodoId> {
+        let ids = self.order_ids();
+        self.selection()
+            .map(|range| {
+                range
+                    .filter_map(|index| ids.get(index).cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    }
+
+    #[must_use]
+    pub fn order_ids(&self) -> Vec<TodoId> {
+        self.display()
+            .order()
+            .iter()
+            .map(|todo| todo.id.clone())
+            .collect()
+    }
+
+    #[must_use]
+    pub fn cursor_index(&self) -> Option<usize> {
+        let cursor = self.cursor.as_ref()?;
+        self.order_ids().iter().position(|id| id == cursor)
+    }
+
+    /// The single place the workspace may be mutated. Snapshot, apply, check, record.
+    fn mutate<R>(
+        &mut self,
+        change: impl FnOnce(&mut Workspace) -> (R, Touched),
+    ) -> Result<R, Locked> {
+        // Needed for the rollback below whether or not it becomes an undo entry.
+        let before = self.snapshot();
+        if self.session.is_none() {
+            self.undo.push(before.clone());
+        }
+        let (result, touched) = change(&mut self.ws);
+        debug_assert!(self.ws.is_valid(), "a mutation left the workspace invalid");
+        debug_assert_names_every_change(&before.ws, &self.ws, &touched);
+
+        // Refusing after the fact rather than before: only the change itself knows which
+        // files it touches, and rolling back to a snapshot we already hold is cheaper than
+        // asking every caller to predict them. Nothing observable happens in between.
+        if let Some(locked) = self.locked_by(&touched) {
+            self.ws = before.ws;
+            if self.session.is_none() {
+                self.undo.pop();
+            }
+            return Err(locked);
+        }
+
+        if let Some(session) = self.session.as_mut() {
+            for target in &touched.saves {
+                if !session.contains(target) {
+                    session.push(target.clone());
+                }
+            }
+        }
+        self.dirty.absorb(touched);
+        Ok(result)
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            ws: self.ws.clone(),
+            view: self.view.clone(),
+            cursor: self.cursor.clone(),
+            cursor_hint: self.cursor_hint,
+            sidebar_cursor: self.sidebar_cursor.clone(),
+        }
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        let mut touched = Touched::saving_all(
+            snapshot
+                .ws
+                .buckets_in_display_order()
+                .iter()
+                .map(target_of)
+                .collect(),
+        );
+        // A project that exists now but not in the snapshot has to lose its file too,
+        // or undoing a create leaves it on disk to reappear on the next launch.
+        let kept = project_ids(&snapshot.ws);
+        touched.deletes = project_ids(&self.ws)
+            .into_iter()
+            .filter(|id| !kept.contains(id))
+            .collect();
+        self.dirty.absorb(touched);
+
+        self.ws = snapshot.ws;
+        self.view = snapshot.view;
+        self.cursor = snapshot.cursor;
+        self.cursor_hint = snapshot.cursor_hint;
+        self.sidebar_cursor = snapshot.sidebar_cursor;
+        self.main = MainState::Normal;
+        self.sidebar = SidebarState::Normal;
+    }
+
+    fn begin_session(&mut self) {
+        self.undo.push(self.snapshot());
+        self.session = Some(Vec::new());
+    }
+
+    fn end_session(&mut self) {
+        self.session = None;
+    }
+
+    /// Rolls the workspace back to where the edit began, so an abandoned `a` leaves
+    /// nothing behind and costs no undo step.
+    fn abort_session(&mut self) {
+        let targets = self.session.take().unwrap_or_default();
+        if let Some(snapshot) = self.undo.pop() {
+            self.ws = snapshot.ws;
+            self.cursor = snapshot.cursor;
+            self.cursor_hint = snapshot.cursor_hint;
+        }
+        // The insert may already have been written, so the rollback needs writing too.
+        for target in targets {
+            self.dirty.mark(target);
+        }
+    }
+
+    /// The first file in `touched` that we could not read, and so must not write.
+    fn locked_by(&self, touched: &Touched) -> Option<Locked> {
+        let saves = touched.saves.iter();
+        let deletes = touched.deletes.iter().map(|id| Target::Project(id.clone()));
+        saves
+            .cloned()
+            .chain(deletes)
+            .find(|target| self.ws.is_read_only(&bucket_of(target)))
+            .map(Locked)
+    }
+
+    /// Says why a keystroke did nothing. Repeatable on purpose: this answers an action,
+    /// unlike the load-time report, which is stated once and left standing.
+    fn refuse(&mut self, locked: &Locked) -> Vec<Effect> {
+        let message = match &locked.0 {
+            Target::AllTodos => "-- ungrouped todos couldn't be loaded; they're locked --".into(),
+            // Unreachable through the UI: a project whose file failed to parse yields no
+            // name, index or parent, so the loader never builds a `ProjectFile` for it and
+            // it never enters `ws.projects()` — no sidebar row, so no cursor can be put in
+            // it. Its read-only mark is keyed off the filename purely so a project restored
+            // by undo cannot overwrite a file we never read, and no undo snapshot can hold
+            // that id because it was never in a workspace. Kept because the reasoning
+            // spans the store and the reducer and is not local to either.
+            Target::Project(_) => format!(
+                "-- {} couldn't be read; this project is locked --",
+                locked.0.file_name()
+            ),
+        };
+        vec![Effect::Toast(self.new_toast(message, ToastLevel::Warning))]
+    }
+
+    fn resolve_cursor(&mut self, how: ResolveCursor, before: Option<usize>) {
+        let ids = self.order_ids();
+        if ids.is_empty() {
+            self.cursor = None;
+            self.cursor_hint = 0;
+            return;
+        }
+        let last = ids.len() - 1;
+        let by_index = before.unwrap_or(self.cursor_hint).min(last);
+        let index = match how {
+            ResolveCursor::ByIndex => by_index,
+            ResolveCursor::ById => self
+                .cursor
+                .as_ref()
+                .and_then(|id| ids.iter().position(|other| other == id))
+                .unwrap_or(by_index),
+        };
+        self.cursor = ids.get(index).cloned();
+        self.cursor_hint = index;
+    }
+
+    fn set_cursor_index(&mut self, index: usize) {
+        let ids = self.order_ids();
+        if ids.is_empty() {
+            self.cursor = None;
+            self.cursor_hint = 0;
+            return;
+        }
+        let index = index.min(ids.len() - 1);
+        self.cursor = ids.get(index).cloned();
+        self.cursor_hint = index;
+    }
+
+    fn refresh_scroll(&mut self, now: i64) {
+        let layout = self.layout(now);
+        let viewport = self.geo.viewport_height();
+        self.scroll = match self.cursor.as_ref().and_then(|id| layout.span(id)) {
+            Some(span) => adjust_scroll(self.scroll, &span, layout.len(), viewport),
+            None => clamp_scroll(self.scroll, layout.len(), viewport),
+        };
+    }
+
+    fn new_toast(&mut self, text: impl Into<String>, level: ToastLevel) -> Toast {
+        self.toast_seq = self.toast_seq.wrapping_add(1);
+        let toast = Toast {
+            text: text.into(),
+            level,
+            ttl_ms: match level {
+                ToastLevel::Error => None,
+                _ => Some(TOAST_TTL_MS),
+            },
+            seq: self.toast_seq,
+        };
+        self.toast = Some(toast.clone());
+        toast
+    }
+
+    fn has_error_toast(&self) -> bool {
+        self.toast
+            .as_ref()
+            .is_some_and(|t| t.level == ToastLevel::Error)
+    }
+
+    // --- views ---
+
+    fn view_state(&self) -> ViewState {
+        ViewState {
+            cursor: self.cursor.clone(),
+            cursor_hint: self.cursor_hint,
+            scroll: self.scroll,
+            search: self.filter().unwrap_or_default().to_string(),
+        }
+    }
+
+    /// Switching views is a projection over what is already in memory. The Elixir
+    /// version re-read `all-todos.json` on every `j`/`k` in the sidebar.
+    fn switch_view(&mut self, view: ViewId) {
+        if view == self.view {
+            return;
+        }
+        let saved = self.view_state();
+        match self.views.iter_mut().find(|(id, _)| id == &self.view) {
+            Some((_, slot)) => *slot = saved,
+            None => self.views.push((self.view.clone(), saved)),
+        }
+
+        let restored = self
+            .views
+            .iter()
+            .find(|(id, _)| id == &view)
+            .map(|(_, state)| state.clone())
+            .unwrap_or_default();
+
+        self.view = view;
+        self.main = if restored.search.is_empty() {
+            MainState::Normal
+        } else {
+            MainState::SearchNav {
+                query: restored.search,
+            }
+        };
+        self.cursor = restored.cursor;
+        self.cursor_hint = restored.cursor_hint;
+        self.scroll = restored.scroll;
+        self.resolve_cursor(ResolveCursor::ById, None);
+    }
+
+    fn sidebar_items(&self) -> Vec<SidebarCursor> {
+        let mut items = vec![SidebarCursor::All];
+        items.extend(
+            self.ws
+                .projects()
+                .flat_ordered()
+                .iter()
+                .map(|p| SidebarCursor::Project(p.id.clone())),
+        );
+        items
+    }
+
+    fn sidebar_index(&self) -> usize {
+        self.sidebar_items()
+            .iter()
+            .position(|item| item == &self.sidebar_cursor)
+            .unwrap_or(0)
+    }
+
+    fn selected_project(&self) -> Option<ProjectId> {
+        match &self.sidebar_cursor {
+            SidebarCursor::All => None,
+            SidebarCursor::Project(id) => Some(id.clone()),
+        }
+    }
+
+    fn view_for_sidebar(&self) -> ViewId {
+        match &self.sidebar_cursor {
+            SidebarCursor::All => ViewId::All,
+            SidebarCursor::Project(id) => ViewId::Project(id.clone()),
+        }
+    }
+
+    /// Where `a` puts a new todo: directly below the cursor, in the cursor's own
+    /// section, so adding inside a project section stays inside it.
+    fn insert_point(&self) -> (Bucket, usize) {
+        let dl = self.display();
+        let index = self
+            .cursor_index()
+            .unwrap_or(0)
+            .min(dl.active.len().saturating_sub(1));
+        if let Some(entry) = dl.active.get(index)
+            && let Some((bucket, position)) = self.ws.find(&entry.todo.id)
+        {
+            return (bucket, position + 1);
+        }
+        let bucket = match &self.view {
+            ViewId::All => Bucket::All,
+            ViewId::Project(id) => Bucket::Project(id.clone()),
+        };
+        let len = self.ws.todos(&bucket).len();
+        (bucket, len)
+    }
+}
+
+impl Editing {
+    #[must_use]
+    pub fn id(&self) -> &TodoId {
+        match &self.target {
+            EditTarget::New(id) | EditTarget::Existing { id, .. } => id,
+        }
+    }
+}
+
+fn workspace_from(snapshot: &StoreSnapshot) -> Workspace {
+    let projects =
+        crate::project::Projects::new(snapshot.projects.iter().map(ProjectFile::project).collect());
+    let todos = snapshot
+        .projects
+        .iter()
+        .map(|file| (file.id.clone(), file.todos.clone()))
+        .collect();
+    Workspace::new(snapshot.all_todos.clone(), projects, todos)
+}
+
+fn toast_level(severity: crate::store::Severity) -> ToastLevel {
+    match severity {
+        crate::store::Severity::Warning => ToastLevel::Warning,
+        crate::store::Severity::Error => ToastLevel::Error,
+    }
+}
+
+/// Applies one action and reports the IO it implies.
+pub fn reduce(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
+    let before = state.cursor_index();
+
+    // Any key other than a second `q` disarms the quit confirmation.
+    if !matches!(action, Action::Quit) {
+        state.quit_armed = false;
+    }
+
+    let effects = match chrome(state, action) {
+        Some(effects) => effects,
+        None => content(state, action, now),
+    };
+
+    state.resolve_cursor(action.resolve_cursor(), before);
+    state.refresh_scroll(now);
+
+    let (deletes, saves) = state.dirty.drain();
+    let mut io: Vec<Effect> = deletes.into_iter().map(Effect::DeleteProject).collect();
+    io.extend(
+        saves
+            .into_iter()
+            .filter(|target| !state.ws.is_read_only(&bucket_of(target)))
+            .map(Effect::Save),
+    );
+    io.extend(effects);
+    io
+}
+
+/// Actions that are about the window rather than the list. `None` means the action
+/// belongs to the panes.
+fn chrome(state: &mut AppState, action: &Action) -> Option<Vec<Effect>> {
+    let mut effects = Vec::new();
+    match action {
+        Action::Resize(width, height) => {
+            state.geo.term_width = *width;
+            state.geo.term_height = *height;
+        }
+        Action::ToastExpire(seq) => {
+            if state.toast.as_ref().is_some_and(|t| t.seq == *seq) {
+                state.toast = None;
+            }
+        }
+        Action::DayChanged => {}
+
+        Action::ToggleSidebar => {
+            state.geo.sidebar_open = !state.geo.sidebar_open;
+            state.pane = if state.sidebar_open() {
+                Pane::Sidebar
+            } else {
+                state.sidebar = SidebarState::Normal;
+                Pane::Main
+            };
+        }
+        Action::SwitchFocus => {
+            state.pane = match state.pane {
+                Pane::Main => Pane::Sidebar,
+                Pane::Sidebar => Pane::Main,
+            };
+            state.main = MainState::Normal;
+        }
+        Action::ToggleHelp => state.help = !state.help,
+
+        Action::Quit => {
+            // Reads the tracked failures rather than the toast: any later message
+            // replaces the toast, and a warning that has been superseded must not let
+            // the user exit believing everything was written.
+            if state.has_failed_saves() && !state.quit_armed {
+                state.quit_armed = true;
+                effects.push(Effect::Toast(state.new_toast(
+                    "-- save failed; press q again to quit anyway --",
+                    ToastLevel::Warning,
+                )));
+            } else {
+                effects.push(Effect::Quit);
+            }
+        }
+        Action::ForceQuit => effects.push(Effect::Quit),
+        _ => return None,
+    }
+    Some(effects)
+}
+
+fn content(state: &mut AppState, action: &Action, now: i64) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    match action {
+        Action::Cursor(motion) | Action::ExtendVisual(motion) => move_cursor(state, *motion),
+
+        Action::AddTodo => effects.extend(add_todo(state, now)),
+        Action::EditTodo => edit_todo(state),
+        Action::DeleteTodo | Action::DeleteSelected => effects.extend(delete(state)),
+        Action::ToggleTodo | Action::ToggleSelected => effects.extend(toggle(state, now)),
+        Action::Move(dir) => effects.extend(move_todos(state, *dir)),
+
+        Action::EnterVisual => {
+            if let Some(cursor) = state.cursor.clone() {
+                state.main = MainState::Visual { anchor: cursor };
+            }
+        }
+        Action::ExitVisual => state.main = MainState::Normal,
+
+        Action::Edit(key) => {
+            if let MainState::Insert(editing) = &mut state.main {
+                apply_edit_key(&mut editing.input, *key);
+            }
+        }
+        Action::ConfirmEdit => effects.extend(confirm_edit(state)),
+        Action::CancelEdit => cancel_edit(state),
+
+        Action::EnterSearch => {
+            let query = state.filter().unwrap_or_default().to_string();
+            state.main = MainState::Search(TextInput::new(query));
+        }
+        Action::Search(key) => {
+            if let MainState::Search(input) = &mut state.main {
+                apply_edit_key(input, *key);
+            }
+            // The filtered list can shrink under the cursor, so re-anchor it every
+            // keystroke rather than letting the highlight disappear.
+            state.resolve_cursor(ResolveCursor::ById, Some(0));
+        }
+        Action::ConfirmSearch => {
+            if let MainState::Search(input) = &state.main {
+                state.main = MainState::SearchNav {
+                    query: input.text().to_string(),
+                };
+                state.set_cursor_index(0);
+            }
+        }
+        Action::CancelSearch => {
+            state.main = MainState::Normal;
+            state.resolve_cursor(ResolveCursor::ById, None);
+        }
+
+        Action::Undo => effects.extend(undo(state, true)),
+        Action::Redo => effects.extend(undo(state, false)),
+
+        Action::Sidebar(sidebar) => effects.extend(reduce_sidebar(state, *sidebar)),
+        _ => {}
+    }
+    effects
+}
+
+/// Every bucket whose contents a mutation changed has to be named in its `Touched` set,
+/// or its file is left holding a stale copy of a todo that now lives somewhere else. This
+/// catches the whole class rather than one instance of it, and it is the check the single
+/// mutation choke point exists to make possible.
+///
+/// Compiled out of release builds. In debug it costs one pass over the id lists, which is
+/// far less than the workspace clone the rollback already takes.
+#[cfg(debug_assertions)]
+fn debug_assert_names_every_change(before: &Workspace, after: &Workspace, touched: &Touched) {
+    let mut buckets = before.buckets_in_display_order();
+    for bucket in after.buckets_in_display_order() {
+        if !buckets.contains(&bucket) {
+            buckets.push(bucket);
+        }
+    }
+
+    for bucket in buckets {
+        let ids = |ws: &Workspace| -> Vec<TodoId> {
+            ws.todos(&bucket).iter().map(|t| t.id.clone()).collect()
+        };
+        if ids(before) == ids(after) {
+            continue;
+        }
+        let target = target_of(&bucket);
+        let named = touched.saves.contains(&target)
+            || bucket
+                .project()
+                .is_some_and(|id| touched.deletes.contains(id));
+        assert!(
+            named,
+            "mutation changed {target} but did not name it; its file would keep a stale copy"
+        );
+    }
+}
+
+#[cfg(not(debug_assertions))]
+fn debug_assert_names_every_change(_: &Workspace, _: &Workspace, _: &Touched) {}
+
+/// One todo as the undo message cares about it.
+struct Placed {
+    id: TodoId,
+    bucket: Bucket,
+    text: String,
+    done: bool,
+}
+
+fn placed(ws: &Workspace) -> Vec<Placed> {
+    ws.buckets_in_display_order()
+        .into_iter()
+        .flat_map(|bucket| {
+            ws.todos(&bucket)
+                .iter()
+                .map(|todo| Placed {
+                    id: todo.id.clone(),
+                    bucket: bucket.clone(),
+                    text: todo.text.clone(),
+                    done: todo.done,
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Names the change that took `from` to `to`, read from the difference itself rather than
+/// from a label recorded when it was made. There is no such label to record — a snapshot is
+/// the whole workspace — and a name derived from the diff cannot disagree with the states it
+/// describes. `None` when nothing recognisable differs, which leaves a bare message rather
+/// than risking a wrong one.
+fn describe_change(from: &Workspace, to: &Workspace) -> Option<&'static str> {
+    if project_ids(from) != project_ids(to) {
+        return Some("project");
+    }
+
+    let (then, now) = (placed(from), placed(to));
+    match then.len().cmp(&now.len()) {
+        std::cmp::Ordering::Less => return Some("add"),
+        std::cmp::Ordering::Greater => return Some("delete"),
+        std::cmp::Ordering::Equal => {}
+    }
+
+    let paired = || {
+        now.iter()
+            .filter_map(|a| then.iter().find(|b| b.id == a.id).map(|b| (a, b)))
+    };
+    if paired().count() != now.len() {
+        // Same number of todos, different ones: a delete and an add in one step.
+        return Some("change");
+    }
+    if paired().any(|(a, b)| a.done != b.done) {
+        return Some("toggle");
+    }
+    if paired().any(|(a, b)| a.text != b.text) {
+        return Some("edit");
+    }
+    if paired().any(|(a, b)| a.bucket != b.bucket) {
+        return Some("move");
+    }
+    if now.iter().map(|p| &p.id).ne(then.iter().map(|p| &p.id)) {
+        return Some("reorder");
+    }
+    None
+}
+
+/// The first locked bucket whose contents `target` would actually change. Buckets the
+/// restore leaves identical are no reason to refuse it.
+fn locked_difference(current: &Workspace, target: &Workspace) -> Option<Target> {
+    let mut buckets = vec![Bucket::All];
+    for id in project_ids(current).into_iter().chain(project_ids(target)) {
+        let bucket = Bucket::Project(id);
+        if !buckets.contains(&bucket) {
+            buckets.push(bucket);
+        }
+    }
+    buckets
+        .into_iter()
+        .find(|bucket| {
+            current.is_read_only(bucket) && current.todos(bucket) != target.todos(bucket)
+        })
+        .map(|bucket| target_of(&bucket))
+}
+
+fn project_ids(ws: &Workspace) -> Vec<ProjectId> {
+    ws.projects()
+        .as_slice()
+        .iter()
+        .map(|p| p.id.clone())
+        .collect()
+}
+
+/// The file a todo's own bucket writes to.
+fn touched_for(ws: &Workspace, id: &TodoId) -> Touched {
+    match ws.find(id) {
+        Some((bucket, _)) => Touched::saving(target_of(&bucket)),
+        None => Touched::nothing(),
+    }
+}
+
+fn touched_for_all(ws: &Workspace, ids: &[TodoId]) -> Touched {
+    let mut touched = Touched::nothing();
+    for id in ids {
+        if let Some((bucket, _)) = ws.find(id) {
+            touched = touched.and_save(target_of(&bucket));
+        }
+    }
+    touched
+}
+
+/// Whether the project has a sibling at its own level to trade places with.
+fn can_reorder_project(state: &AppState, id: &ProjectId, down: bool) -> bool {
+    let Some(project) = state.ws.projects().get(id) else {
+        return false;
+    };
+    let level: Vec<ProjectId> = match &project.parent_id {
+        None => state.ws.projects().top_level(),
+        Some(parent) => state.ws.projects().children(parent),
+    }
+    .iter()
+    .map(|p| p.id.clone())
+    .collect();
+
+    let Some(at) = level.iter().position(|other| other == id) else {
+        return false;
+    };
+    if down { at + 1 < level.len() } else { at > 0 }
+}
+
+fn bucket_of(target: &Target) -> Bucket {
+    match target {
+        Target::AllTodos => Bucket::All,
+        Target::Project(id) => Bucket::Project(id.clone()),
+    }
+}
+
+fn move_cursor(state: &mut AppState, motion: Motion) {
+    let ids = state.order_ids();
+    if ids.is_empty() {
+        return;
+    }
+    let last = ids.len() - 1;
+    let current = state.cursor_index().unwrap_or(0);
+    // Half-page uses the viewport, not the terminal height; the Elixir version
+    // overshot by the reserved rows.
+    let jump = state.geo.viewport_height() / 2;
+    let next = match motion {
+        Motion::Down => current.saturating_add(1).min(last),
+        Motion::Up => current.saturating_sub(1),
+        Motion::Start => 0,
+        Motion::End => last,
+        Motion::HalfDown => current.saturating_add(jump).min(last),
+        Motion::HalfUp => current.saturating_sub(jump),
+    };
+    state.set_cursor_index(next);
+}
+
+fn add_todo(state: &mut AppState, now: i64) -> Vec<Effect> {
+    let (bucket, at) = state.insert_point();
+    let todo = Todo::new("", now);
+    let id = todo.id.clone();
+
+    state.begin_session();
+    let target = target_of(&bucket);
+    let inserted = state.mutate(|ws| {
+        ws.insert_todo(&bucket, at, todo);
+        ((), Touched::saving(target))
+    });
+    if let Err(locked) = inserted {
+        // `begin_session` pushed a snapshot that no longer describes anything.
+        state.abort_session();
+        return state.refuse(&locked);
+    }
+
+    state.cursor = Some(id.clone());
+    state.main = MainState::Insert(Editing {
+        target: EditTarget::New(id),
+        input: TextInput::new(""),
+    });
+    Vec::new()
+}
+
+fn edit_todo(state: &mut AppState) {
+    let Some(id) = state.cursor.clone() else {
+        return;
+    };
+    let Some(todo) = state.ws.get(&id) else {
+        return;
+    };
+    let original = todo.text.clone();
+    state.main = MainState::Insert(Editing {
+        target: EditTarget::Existing {
+            id,
+            original: original.clone(),
+        },
+        input: TextInput::new(original),
+    });
+}
+
+fn confirm_edit(state: &mut AppState) -> Vec<Effect> {
+    let MainState::Insert(editing) = std::mem::take(&mut state.main) else {
+        return Vec::new();
+    };
+    let blank = editing.input.is_blank();
+    let id = editing.id().clone();
+    let text = editing.input.into_text();
+
+    let written = match editing.target {
+        // Confirming an empty new todo discards it, exactly as escaping would.
+        EditTarget::New(_) if blank => {
+            state.abort_session();
+            Ok(())
+        }
+        EditTarget::New(_) => {
+            let written = state.mutate(|ws| {
+                ws.set_text(&id, text);
+                ((), touched_for(ws, &id))
+            });
+            if written.is_err() {
+                state.abort_session();
+            } else {
+                state.end_session();
+            }
+            written
+        }
+        // An emptied existing todo reverts rather than vanishing.
+        EditTarget::Existing { original, .. } if blank || text == original => Ok(()),
+        EditTarget::Existing { .. } => state.mutate(|ws| {
+            ws.set_text(&id, text);
+            ((), touched_for(ws, &id))
+        }),
+    };
+
+    match written {
+        Ok(()) => Vec::new(),
+        Err(locked) => state.refuse(&locked),
+    }
+}
+
+fn cancel_edit(state: &mut AppState) {
+    let MainState::Insert(editing) = std::mem::take(&mut state.main) else {
+        return;
+    };
+    if matches!(editing.target, EditTarget::New(_)) {
+        state.abort_session();
+    }
+}
+
+fn apply_edit_key(input: &mut TextInput, key: EditKey) {
+    match key {
+        EditKey::Char(ch) => input.insert_char(ch),
+        EditKey::Backspace => input.backspace(),
+        EditKey::Delete => input.delete(),
+        EditKey::Left => input.move_left(),
+        EditKey::Right => input.move_right(),
+        EditKey::Home => input.move_home(),
+        EditKey::End => input.move_end(),
+        EditKey::DeleteWordBefore => input.delete_word_before(),
+        EditKey::DeleteToStart => input.delete_to_start(),
+    }
+}
+
+fn delete(state: &mut AppState) -> Vec<Effect> {
+    let ids = state.selected_ids();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let removed = state.mutate(|ws| {
+        // Read before the removal: afterwards the todos have no bucket to name.
+        let touched = touched_for_all(ws, &ids);
+        for id in &ids {
+            ws.remove_todo(id);
+        }
+        ((), touched)
+    });
+    if let Err(locked) = removed {
+        return state.refuse(&locked);
+    }
+    state.main = MainState::Normal;
+    Vec::new()
+}
+
+fn toggle(state: &mut AppState, now: i64) -> Vec<Effect> {
+    let ids = state.selected_ids();
+    if ids.is_empty() {
+        return Vec::new();
+    }
+    let toggled = state.mutate(|ws| {
+        for id in &ids {
+            ws.toggle(id, now);
+        }
+        ((), touched_for_all(ws, &ids))
+    });
+    if let Err(locked) = toggled {
+        return state.refuse(&locked);
+    }
+    state.main = MainState::Normal;
+    Vec::new()
+}
+
+fn move_todos(state: &mut AppState, dir: Dir) -> Vec<Effect> {
+    let Some(selection) = state.selection() else {
+        return Vec::new();
+    };
+    let plan = {
+        let dl = state.display();
+        reorder::plan(&state.ws, &state.view, &dl, selection, dir)
+    };
+
+    match plan {
+        Reorder::Blocked(Blocked::Completed) => vec![Effect::Toast(
+            state.new_toast("-- completed todos can't be reordered --", ToastLevel::Info),
+        )],
+        Reorder::Blocked(Blocked::Edge) => Vec::new(),
+        Reorder::Move {
+            ref bucket,
+            ref ids,
+            ..
+        } => {
+            let target = target_of(bucket);
+            match state.mutate(|ws| {
+                // Read before the move, and over every selected todo rather than just the
+                // destination: a visual run whose leading edge shares a bucket with its
+                // neighbour plans as a Move even when the rest of the run sits in another
+                // section, so this drains files the destination alone would not name.
+                let touched = touched_for_all(ws, ids).and_save(target);
+                reorder::apply(ws, &plan);
+                ((), touched)
+            }) {
+                Ok(()) => Vec::new(),
+                Err(locked) => state.refuse(&locked),
+            }
+        }
+        Reorder::Reassign {
+            ref to, ref ids, ..
+        } => {
+            let label = section_label(state, to);
+            let destination = target_of(to);
+            if let Err(locked) = state.mutate(|ws| {
+                let touched = touched_for_all(ws, ids).and_save(destination);
+                reorder::apply(ws, &plan);
+                ((), touched)
+            }) {
+                return state.refuse(&locked);
+            }
+            vec![Effect::Toast(state.new_toast(
+                format!("-- moved to {label} --"),
+                ToastLevel::Info,
+            ))]
+        }
+    }
+}
+
+fn section_label(state: &AppState, bucket: &Bucket) -> String {
+    match bucket.project() {
+        None => "Todos".into(),
+        Some(id) => state
+            .ws
+            .projects()
+            .get(id)
+            .map_or_else(|| "Todos".into(), |p| format!("# {}", p.name)),
+    }
+}
+
+fn undo(state: &mut AppState, backwards: bool) -> Vec<Effect> {
+    // Checked before the stack moves, and only against buckets the restore would really
+    // change. Refusing whenever a restore merely *mentions* a locked bucket would disable
+    // undo for the whole session over one damaged file, including undos of edits made
+    // somewhere else entirely.
+    let peeked = if backwards {
+        state.undo.peek_undo()
+    } else {
+        state.undo.peek_redo()
+    };
+    if let Some(target) = peeked.and_then(|snapshot| locked_difference(&state.ws, &snapshot.ws)) {
+        return state.refuse(&Locked(target));
+    }
+
+    let current = state.snapshot();
+    let restored = if backwards {
+        state.undo.undo(current)
+    } else {
+        state.undo.redo(current)
+    };
+    let Some(snapshot) = restored else {
+        let message = if backwards {
+            "-- already at the oldest change --"
+        } else {
+            "-- already at the newest change --"
+        };
+        return vec![Effect::Toast(state.new_toast(message, ToastLevel::Info))];
+    };
+
+    // Named after the change itself, so the two directions read the same way: the
+    // original edit ran older -> newer, which is snapshot -> current for an undo and
+    // current -> snapshot for a redo.
+    let (verb, from, to) = if backwards {
+        ("undo", &snapshot.ws, &state.ws)
+    } else {
+        ("redo", &state.ws, &snapshot.ws)
+    };
+    let message = match describe_change(from, to) {
+        Some(change) => format!("-- {verb}: {change} --"),
+        None => format!("-- {verb} --"),
+    };
+
+    state.restore(snapshot);
+    state.resolve_cursor(ResolveCursor::ById, None);
+    vec![Effect::Toast(state.new_toast(message, ToastLevel::Info))]
+}
+
+fn reduce_sidebar(state: &mut AppState, action: SidebarAction) -> Vec<Effect> {
+    match action {
+        SidebarAction::Down | SidebarAction::Up => {
+            let items = state.sidebar_items();
+            let index = state.sidebar_index();
+            let next = match action {
+                SidebarAction::Down => index.saturating_add(1).min(items.len().saturating_sub(1)),
+                _ => index.saturating_sub(1),
+            };
+            if let Some(item) = items.get(next) {
+                state.sidebar_cursor = item.clone();
+            }
+            let view = state.view_for_sidebar();
+            state.switch_view(view);
+            Vec::new()
+        }
+        SidebarAction::Select => {
+            state.pane = Pane::Main;
+            Vec::new()
+        }
+        SidebarAction::Edit(key) => {
+            if let SidebarState::Insert { input, .. } = &mut state.sidebar {
+                apply_edit_key(input, key);
+            }
+            Vec::new()
+        }
+        SidebarAction::ConfirmEdit => confirm_sidebar_edit(state),
+        SidebarAction::CancelDelete | SidebarAction::CancelEdit => {
+            state.sidebar = SidebarState::Normal;
+            Vec::new()
+        }
+        _ => sidebar_project_op(state, action),
+    }
+}
+
+fn sidebar_project_op(state: &mut AppState, action: SidebarAction) -> Vec<Effect> {
+    match action {
+        SidebarAction::AddProject => {
+            state.sidebar = SidebarState::Insert {
+                target: ProjectEdit::NewTopLevel,
+                input: TextInput::new(""),
+            };
+            Vec::new()
+        }
+        SidebarAction::AddSubproject => match state.selected_project() {
+            Some(id)
+                if state
+                    .ws
+                    .projects()
+                    .get(&id)
+                    .is_some_and(Project::is_top_level) =>
+            {
+                state.sidebar = SidebarState::Insert {
+                    target: ProjectEdit::NewChild(id),
+                    input: TextInput::new(""),
+                };
+                Vec::new()
+            }
+            Some(_) => vec![Effect::Toast(
+                state.new_toast("-- only two levels of projects --", ToastLevel::Info),
+            )],
+            None => vec![Effect::Toast(state.new_toast(
+                "-- \"All Todos\" can't hold subprojects --",
+                ToastLevel::Info,
+            ))],
+        },
+        SidebarAction::Rename => match state.selected_project() {
+            Some(id) => {
+                let name = state
+                    .ws
+                    .projects()
+                    .get(&id)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_default();
+                state.sidebar = SidebarState::Insert {
+                    target: ProjectEdit::Rename(id),
+                    input: TextInput::new(name),
+                };
+                Vec::new()
+            }
+            None => vec![Effect::Toast(
+                state.new_toast("-- \"All Todos\" can't be renamed --", ToastLevel::Info),
+            )],
+        },
+        SidebarAction::Delete => match state.selected_project() {
+            Some(id) if state.ws.has_open_todos(&id) => {
+                state.sidebar = SidebarState::ConfirmDelete(id);
+                Vec::new()
+            }
+            Some(id) => delete_project(state, &id),
+            None => vec![Effect::Toast(
+                state.new_toast("-- \"All Todos\" can't be deleted --", ToastLevel::Info),
+            )],
+        },
+        SidebarAction::ConfirmDelete => {
+            let SidebarState::ConfirmDelete(id) = std::mem::take(&mut state.sidebar) else {
+                return Vec::new();
+            };
+            delete_project(state, &id)
+        }
+        SidebarAction::Move(dir) => {
+            let Some(id) = state.selected_project() else {
+                return vec![Effect::Toast(state.new_toast(
+                    "-- \"All Todos\" can't be reordered --",
+                    ToastLevel::Info,
+                ))];
+            };
+            let down = dir == Dir::Down;
+            // Decided before mutating: entering `mutate` speculatively would clear the
+            // redo branch even when the project is already at the end of its level.
+            if !can_reorder_project(state, &id, down) {
+                return Vec::new();
+            }
+            // Both projects in the swap change index, so both files need writing.
+            let files: Vec<Target> = state
+                .ws
+                .projects()
+                .as_slice()
+                .iter()
+                .map(|p| Target::Project(p.id.clone()))
+                .collect();
+            match state.mutate(|ws| {
+                let moved = ws.reorder_project(&id, down);
+                debug_assert!(moved, "a reorder ruled possible did not happen");
+                ((), Touched::saving_all(files))
+            }) {
+                Ok(()) => Vec::new(),
+                Err(locked) => state.refuse(&locked),
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn confirm_sidebar_edit(state: &mut AppState) -> Vec<Effect> {
+    let SidebarState::Insert { target, input } = std::mem::take(&mut state.sidebar) else {
+        return Vec::new();
+    };
+    let name = input.text().trim().to_string();
+    if name.is_empty() {
+        return Vec::new();
+    }
+
+    match target {
+        ProjectEdit::NewTopLevel | ProjectEdit::NewChild(_) => {
+            let parent = match &target {
+                ProjectEdit::NewChild(id) => Some(id.clone()),
+                _ => None,
+            };
+            let created = state.mutate(|ws| {
+                let id = ws.add_project(name, parent);
+                let touched = Touched::saving(Target::Project(id.clone()));
+                (id, touched)
+            });
+            match created {
+                Ok(id) => {
+                    state.sidebar_cursor = SidebarCursor::Project(id);
+                    let view = state.view_for_sidebar();
+                    state.switch_view(view);
+                }
+                Err(locked) => return state.refuse(&locked),
+            }
+        }
+        ProjectEdit::Rename(id) => {
+            let renamed = state.mutate(|ws| {
+                ws.rename_project(&id, name);
+                ((), Touched::saving(Target::Project(id.clone())))
+            });
+            if let Err(locked) = renamed {
+                return state.refuse(&locked);
+            }
+        }
+    }
+    Vec::new()
+}
+
+fn delete_project(state: &mut AppState, id: &ProjectId) -> Vec<Effect> {
+    let items = state.sidebar_items();
+    let index = state.sidebar_index();
+    let removed = match state.mutate(|ws| {
+        let removed = ws.delete_project(id);
+        (removed.clone(), Touched::deleting(removed))
+    }) {
+        Ok(removed) => removed,
+        Err(locked) => return state.refuse(&locked),
+    };
+
+    // Land on whatever now occupies the deleted row, which is the entry below it.
+    let survivors = state.sidebar_items();
+    state.sidebar_cursor = survivors
+        .get(index.min(survivors.len().saturating_sub(1)))
+        .cloned()
+        .unwrap_or(SidebarCursor::All);
+    drop(items);
+
+    state.views.retain(|(view, _)| match view {
+        ViewId::All => true,
+        ViewId::Project(project) => !removed.contains(project),
+    });
+    let view = state.view_for_sidebar();
+    state.switch_view(view);
+    if matches!(&state.view, ViewId::Project(project) if removed.contains(project)) {
+        state.switch_view(ViewId::All);
+    }
+
+    state.sidebar = SidebarState::Normal;
+    vec![Effect::Toast(
+        state.new_toast("-- project deleted --", ToastLevel::Info),
+    )]
+}

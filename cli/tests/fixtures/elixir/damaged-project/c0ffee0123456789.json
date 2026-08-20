@@ -1,0 +1,37 @@
+{
+  "id": "c0ffee0123456789",
+  "index": 2,
+  "name": "carried",
+  "parent_id": null,
+  "todos": [
+    {
+      "id": "a73c2f755f3ade54",
+      "text": "a todo doer understands",
+      "done": false,
+      "created_at": 1786030923,
+      "completed_at": null
+    },
+    {
+      "id": "84c5673da5d02802",
+      "text": "carries fields from a newer doer",
+      "done": false,
+      "created_at": 1786030931,
+      "completed_at": null,
+      "tags": [
+        "later",
+        "maybe"
+      ],
+      "recurrence": {
+        "every": "week",
+        "count": 3
+      }
+    },
+    {
+      "id": "5f0e1d2c3b4a5968",
+      "text": "doer cannot read this one at all",
+      "done": "sometimes",
+      "created_at": 1786030940,
+      "completed_at": null
+    }
+  ]
+}

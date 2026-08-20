@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+# Drives the real binary inside tmux and prints what the terminal actually shows.
+#
+# The snapshot tests in cli/tests/render.rs cover what the renderer *intends* to draw.
+# This covers the part they cannot: raw mode, resize, bracketed paste, the terminal's
+# own cursor, and colours as an emulator resolves them. It runs against a scratch
+# DOER_HOME, so your real ~/.doer is never touched.
+#
+#   scripts/tui keys 'a' 'buy milk' Enter j Space     send keys, print the screen
+#   scripts/tui screen                                print the screen again
+#   scripts/tui colors                                print it with escape sequences
+#   scripts/tui size 100 30                           resize the window
+#   scripts/tui seed                                  refill the scratch home
+#   scripts/tui shell                                 attach so you can drive it
+#   scripts/tui alive                                 did the process exit?
+#   scripts/tui stop                                  kill the session
+#
+# Key names are tmux's: Enter Escape Space Tab BSpace Up Down Left Right C-d C-r.
+# Anything else is sent literally, so quote multi-word text as one argument.
+
+set -euo pipefail
+
+session=doer-harness
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+home="${DOER_HARNESS_HOME:-${TMPDIR:-/tmp}/doer-harness}"
+bin="$root/target/debug/doer"
+cols="${DOER_HARNESS_COLS:-100}"
+rows="${DOER_HARNESS_ROWS:-30}"
+
+die() { echo "harness: $*" >&2; exit 1; }
+
+command -v tmux >/dev/null || die "tmux is not installed"
+
+build() {
+  # Quietly, and to stderr, so cargo's output never lands in the middle of a captured
+  # screen and gets read as part of the UI.
+  ( cd "$root" && cargo build --quiet >/dev/null 2>build.log ) || {
+    cat "$root/build.log" >&2
+    die "build failed"
+  }
+  rm -f "$root/build.log"
+}
+
+seed() {
+  rm -rf "$home"
+  mkdir -p "$home/projects"
+  local now
+  now=$(date +%s)
+  cat > "$home/all-todos.json" <<JSON
+[
+  {
+    "id": "1111111111111111",
+    "text": "an ungrouped todo",
+    "done": false,
+    "created_at": $((now - 86400 * 3)),
+    "completed_at": null
+  },
+  {
+    "id": "2222222222222222",
+    "text": "a todo long enough that it has to wrap across more than one line to fit",
+    "done": false,
+    "created_at": $((now - 86400)),
+    "completed_at": null
+  },
+  {
+    "id": "3333333333333333",
+    "text": "买菜 and ship the 🚀",
+    "done": false,
+    "created_at": $now,
+    "completed_at": null
+  },
+  {
+    "id": "4444444444444444",
+    "text": "something already finished",
+    "done": true,
+    "created_at": $((now - 86400 * 9)),
+    "completed_at": $((now - 86400 * 2))
+  }
+]
+JSON
+  cat > "$home/projects/aaaaaaaaaaaaaaaa.json" <<JSON
+{
+  "id": "aaaaaaaaaaaaaaaa",
+  "index": 0,
+  "name": "work",
+  "parent_id": null,
+  "todos": [
+    {
+      "id": "5555555555555555",
+      "text": "review the port",
+      "done": false,
+      "created_at": $((now - 86400 * 2)),
+      "completed_at": null
+    }
+  ]
+}
+JSON
+  cat > "$home/projects/bbbbbbbbbbbbbbbb.json" <<JSON
+{
+  "id": "bbbbbbbbbbbbbbbb",
+  "index": 0,
+  "name": "api",
+  "parent_id": "aaaaaaaaaaaaaaaa",
+  "todos": [
+    {
+      "id": "6666666666666666",
+      "text": "a child project todo",
+      "done": false,
+      "created_at": $now,
+      "completed_at": null
+    }
+  ]
+}
+JSON
+}
+
+running() { tmux has-session -t "$session" 2>/dev/null; }
+
+start() {
+  build
+  [ -d "$home" ] || seed
+  running && return 0
+  tmux new-session -d -s "$session" -x "$cols" -y "$rows" \
+    "DOER_HOME='$home' '$bin'"
+  # The first frame is drawn on startup, not on a keypress, so give it a moment
+  # before anyone captures the pane.
+  sleep 0.4
+}
+
+settle() { sleep 0.25; }
+
+# Capturing must never silently relaunch a process that has exited, or a quit bug looks
+# like a working app.
+capture() {
+  if running; then
+    tmux capture-pane -p ${1:-} -t "$session"
+  else
+    echo "(doer exited)"
+  fi
+}
+
+case "${1:-screen}" in
+  keys)
+    shift
+    start
+    [ $# -gt 0 ] || die "keys needs at least one key"
+    for key in "$@"; do
+      case "$key" in
+        Enter|Escape|Space|Tab|BSpace|Up|Down|Left|Right|Home|End|C-*|M-*|S-*|F[0-9]*|PPage|NPage|IC|DC)
+          tmux send-keys -t "$session" "$key" ;;
+        *)
+          tmux send-keys -t "$session" -l -- "$key" ;;
+      esac
+      sleep 0.06
+    done
+    settle
+    capture
+    ;;
+  screen)  start; capture ;;
+  colors)  start; capture -e ;;
+  cursor)
+    start
+    if running; then
+      pane=$(tmux list-panes -t "$session" -F '#{pane_id}' | head -1)
+      tmux display-message -p -t "$pane" 'cursor #{cursor_x},#{cursor_y} visible=#{cursor_flag}'
+    else
+      echo "(doer exited)"
+    fi
+    ;;
+  size)
+    start
+    [ $# -eq 3 ] || die "size needs width and height"
+    tmux resize-window -t "$session" -x "$2" -y "$3"
+    settle
+    capture
+    ;;
+  seed)  tmux kill-session -t "$session" 2>/dev/null || true; seed; echo "seeded $home" ;;
+  home)  echo "$home" ;;
+  shell) start; tmux attach -t "$session" ;;
+  alive) if running; then echo "running"; else echo "exited"; fi ;;
+  stop)  tmux kill-session -t "$session" 2>/dev/null || true ;;
+  files) find "$home" -type f | sort | while read -r f; do echo "--- $f"; cat "$f"; echo; done ;;
+  *)     die "unknown command '${1}'. Run with no arguments for the screen, or read the header." ;;
+esac

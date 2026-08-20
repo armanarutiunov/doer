@@ -1,0 +1,24 @@
+---
+source: cli/tests/render.rs
+expression: text_of(terminal.backend().buffer())
+---
+  All Todos                        │                    |
+                                   │    Todos           |
+  Projects                         │                    |
+                                   │  ◯ buy milk        |
+  # Work                           │  ◯ call the plumber|
+    # Deep                         │                    |
+                                   │                    |
+                                   │    # Work          |
+                                   │                    |
+                                   │  ◯ a deliberately  |
+                                   │    long todo that  |
+                                   │    has to wrap     |
+                                   │    across more than|
+                                   │    one line to     |
+                                   │    prove the scroll|
+                                   │                    |
+                                   │                    |
+                                   │                    |
+                                   │ NORMAL     1/5     |
+                                   │                    |

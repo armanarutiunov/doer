@@ -4,55 +4,153 @@ on:
   push:
     tags:
       - "v*"
+  # So a release can be re-run from the Actions tab when a tag already exists and the
+  # tagged run failed for a reason outside the code -- a runner outage, an expired token.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.3.0"
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  release:
+  # The formula's own test compares the tag against what the binary reports, so a
+  # mismatch is a broken release that only shows up in `brew test`. Checked here, before
+  # anything is built or published.
+  preflight:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
     steps:
       - uses: actions/checkout@v4
 
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.17"
-          otp-version: "27"
+      - name: Resolve the tag and check it against Cargo.toml
+        id: resolve
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          declared=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+            | sed -n 's/^version = "\(.*\)"/\1/p' | head -1)
 
-      - run: mix deps.get
-      - run: mix escript.build
+          if [ "$version" != "$declared" ]; then
+            echo "::error::tag $TAG does not match the version in Cargo.toml ($declared)."
+            echo "::error::Bump Cargo.toml to $version, or tag v$declared instead."
+            exit 1
+          fi
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "releasing $TAG (version $version)"
+
+  build:
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          # Cross-compiled from the arm runner: GitHub retired the Intel macOS runners,
+          # and a pure-Rust binary needs no host of its own architecture to be built.
+          - { os: macos-14, target: x86_64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          tar -czf "doer-${{ matrix.target }}.tar.gz" -C "target/${{ matrix.target }}/release" doer
+          shasum -a 256 "doer-${{ matrix.target }}.tar.gz" > "doer-${{ matrix.target }}.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: doer-${{ matrix.target }}
+          path: |
+            doer-${{ matrix.target }}.tar.gz
+            doer-${{ matrix.target }}.tar.gz.sha256
+
+  release:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
 
       - uses: softprops/action-gh-release@v2
         with:
-          files: doer
+          tag_name: ${{ needs.preflight.outputs.tag }}
+          files: |
+            doer-*.tar.gz
+            doer-*.tar.gz.sha256
           generate_release_notes: true
 
       - name: Update Homebrew tap
+        env:
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VERSION: ${{ needs.preflight.outputs.version }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          SHA256=$(shasum -a 256 doer | cut -d' ' -f1)
-          RELEASE_URL="https://github.com/armanarutiunov/doer/releases/download/${GITHUB_REF_NAME}/doer"
+          set -euo pipefail
+          BASE="https://github.com/armanarutiunov/doer/releases/download/${TAG}"
 
-          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiunov/homebrew-doer.git /tmp/tap
+          sha_of() { cut -d' ' -f1 < "doer-$1.tar.gz.sha256"; }
+          ARM_MAC=$(sha_of aarch64-apple-darwin)
+          X86_MAC=$(sha_of x86_64-apple-darwin)
+          ARM_LINUX=$(sha_of aarch64-unknown-linux-gnu)
+          X86_LINUX=$(sha_of x86_64-unknown-linux-gnu)
+
+          git clone "https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/armanarutiunov/homebrew-doer.git" /tmp/tap
           cd /tmp/tap
+          mkdir -p Formula
 
           cat > Formula/doer.rb << EOF
           class Doer < Formula
             desc "Vim-inspired TUI todo app"
             homepage "https://github.com/armanarutiunov/doer"
-            url "${RELEASE_URL}"
             version "${VERSION}"
-            sha256 "${SHA256}"
             license "MIT"
 
-            depends_on "erlang"
+            on_macos do
+              if Hardware::CPU.arm?
+                url "${BASE}/doer-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM_MAC}"
+              else
+                url "${BASE}/doer-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_MAC}"
+              end
+            end
+
+            on_linux do
+              if Hardware::CPU.arm?
+                url "${BASE}/doer-aarch64-unknown-linux-gnu.tar.gz"
+                sha256 "${ARM_LINUX}"
+              else
+                url "${BASE}/doer-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${X86_LINUX}"
+              end
+            end
 
             def install
               bin.install "doer"
             end
 
             test do
-              assert_match "doer", shell_output("#{bin}/doer --help 2>&1", 0)
+              assert_match version.to_s, shell_output("#{bin}/doer --version")
             end
           end
           EOF
