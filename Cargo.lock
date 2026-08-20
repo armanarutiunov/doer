@@ -349,7 +349,7 @@ dependencies = [
 
 [[package]]
 name = "doer"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "dirs",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "doer-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "getrandom 0.4.3",
  "proptest",
