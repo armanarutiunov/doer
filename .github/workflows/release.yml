@@ -142,6 +142,47 @@ jobs:
             doer-${{ matrix.target }}.tar.gz
             doer-${{ matrix.target }}.tar.gz.sha256
 
+  # Publishing is separate from the GitHub release because it fails in its own ways --
+  # an unverified email, a name clash, a registry backlog -- and none of those should
+  # stop the binaries and the formula from going out.
+  crates:
+    needs: [preflight, build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${CARGO_REGISTRY_TOKEN:-}" ]; then
+            echo "::notice::CARGO_REGISTRY_TOKEN is not set, so nothing was published."
+            echo "::notice::Set it with: gh secret set CARGO_REGISTRY_TOKEN --repo armanarutiunov/doer"
+            exit 0
+          fi
+
+          # doer-core first: doer-tui pins it by version, so the registry has to have it
+          # before the binary crate can be verified.
+          for crate in doer-core doer-tui; do
+            if cargo publish -p "$crate"; then
+              continue
+            fi
+            # A re-run of a release that already published is not a failure. Anything
+            # else is, so the two are told apart rather than both being swallowed.
+            if cargo info "${crate}@${VERSION}" >/dev/null 2>&1; then
+              echo "::notice::${crate} ${VERSION} was already published."
+            else
+              echo "::error::publishing ${crate} ${VERSION} failed."
+              exit 1
+            fi
+          done
+
   release:
     needs: [preflight, build]
     runs-on: ubuntu-latest
