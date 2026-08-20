@@ -1,6 +1,6 @@
 # doer
 
-A vim-flavoured terminal todo app.
+A vim-flavoured terminal todo app, built with Rust and ratatui.
 
 ## Install
 
