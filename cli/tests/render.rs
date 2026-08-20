@@ -5,13 +5,13 @@
 
 use std::collections::HashMap;
 
-use doer::ui::draw;
-use doer::ui::theme::Theme;
 use doer_core::app::{AppState, MainState, Pane, SidebarCursor};
 use doer_core::display::ViewId;
 use doer_core::layout::Geometry;
 use doer_core::text::TextInput;
 use doer_core::{Project, ProjectId, Projects, Todo, TodoId, Workspace};
+use doer_tui::ui::draw;
+use doer_tui::ui::theme::Theme;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;

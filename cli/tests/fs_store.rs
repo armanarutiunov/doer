@@ -6,9 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use doer::store::FsStore;
 use doer_core::store::{Problem, ProjectFile, Store};
 use doer_core::{ProjectId, Todo};
+use doer_tui::store::FsStore;
 
 const DAY: u64 = 24 * 60 * 60;
 

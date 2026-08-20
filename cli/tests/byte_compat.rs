@@ -7,9 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use doer::store::FsStore;
 use doer_core::Todo;
 use doer_core::store::{ProjectFile, Store};
+use doer_tui::store::FsStore;
 
 fn fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/elixir")

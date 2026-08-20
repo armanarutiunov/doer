@@ -83,3 +83,40 @@ Comment only what the code cannot say for itself: why a non-obvious choice was m
 invariant the reader must preserve, an edge case that would otherwise be lost. Never
 restate the next line. Never write a doc comment that repeats the signature. No
 section-divider banners. Prefer no comment to an obvious one.
+
+## Publishing
+
+The two channels are packaged differently on purpose.
+
+The Homebrew tap (`armanarutiunov/homebrew-doer`) ships prebuilt binaries, so
+`brew install` does not compile Rust on someone's laptop. `release.yml` rewrites that
+formula on every tag.
+
+`packaging/homebrew-core.rb` builds from source, because homebrew-core bottles formulae
+itself and will not take a binary-only one. It is a template for a future submission,
+not the formula anyone installs today. Two things gate acceptance and neither is in the
+file: notability, where the guideline is 75+ stars, 30+ forks or 30+ watchers, and the
+name `doer` still being free in homebrew-core. To submit: point `url` and `sha256` at the
+release, run `brew audit --new --strict --online doer`, and open a PR adding
+`Formula/d/doer.rb`. Its test drives the binary under a pty because the app needs a
+terminal; with none attached it fails to start rather than hanging, which is what makes
+it testable in a sandbox.
+
+Releasing is a decision, not a consequence of merging: `release.yml` is run from the
+Actions tab. `version` defaults to `auto`, which bumps the minor version, because that is
+what a release of this usually is; a patch is spelled out as an exact version. The job
+then bumps, commits and tags, and everything after it builds from the tag, so a binary
+cannot disagree with the version it was released under.
+
+The bump edits two places -- the workspace version and the version pinned on the path
+dependency, which crates.io requires and cargo refuses to leave stale -- via
+`.github/scripts/bump-version.py`, which exits non-zero if either edit matches nothing.
+A silent miss there would tag a version the binary does not report, and the Homebrew
+formula's own test compares exactly those two things.
+
+crates.io wants the crates in dependency order, `doer-core` before `doer-tui`, and a path
+dependency has to carry a version or the published copy cannot resolve it. The binary
+crate is `doer-tui` because `doer` on crates.io is an unrelated tool from 2023 and a
+published name is not reassigned; the binary it installs is still `doer`, which is what
+`[[bin]]` is for. `cargo publish --dry-run -p doer` cannot pass until `doer-core` is
+actually up there, so a failure at that step is expected the first time.

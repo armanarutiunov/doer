@@ -348,20 +348,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "doer"
-version = "0.3.0"
-dependencies = [
- "anyhow",
- "dirs",
- "doer-core",
- "insta",
- "ratatui",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
 name = "doer-core"
 version = "0.3.0"
 dependencies = [
@@ -372,6 +358,20 @@ dependencies = [
  "thiserror 2.0.20",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "doer-tui"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "dirs",
+ "doer-core",
+ "insta",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
