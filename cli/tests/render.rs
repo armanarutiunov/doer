@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use doer_core::app::{AppState, MainState, Pane, SidebarCursor};
 use doer_core::display::ViewId;
 use doer_core::layout::Geometry;
+use doer_core::text;
 use doer_core::text::TextInput;
 use doer_core::{Project, ProjectId, Projects, Todo, TodoId, Workspace};
 use doer_tui::ui::draw;
@@ -198,6 +199,26 @@ fn a_completed_todo_is_struck_through() {
             .add_modifier
             .contains(Modifier::CROSSED_OUT)
     );
+}
+
+/// The strike marks the words, not the row. Styling the padding as well drew a line
+/// across the gap between the text and the date column.
+#[test]
+fn the_strike_stops_at_the_end_of_the_text() {
+    let terminal = Fixture::new(120, 40).render();
+    let buffer = terminal.backend().buffer();
+    let (x, y) = find(buffer, "ship the port");
+
+    let struck = |x: u16| {
+        buffer[(x, y)]
+            .style()
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT)
+    };
+    let last = x + text::to_u16("ship the port".len()) - 1;
+    assert!(struck(last), "the last character of the text is struck");
+    assert!(!struck(last + 1), "the space after it is not");
+    assert!(!struck(last + 6), "nor is the gap before the dates");
 }
 
 #[test]

@@ -71,7 +71,7 @@ fn paint(row: &Row, content_width: usize, view: &ListView<'_>, theme: &Theme) ->
             Span::raw(" ".repeat(text::to_usize(PREFIX_WIDTH))),
             Span::styled((*hint).to_string(), theme.dim),
         ]),
-        Row::Todo(todo) => todo_line(todo, content_width, view, theme),
+        Row::Todo(todo) => todo_line(todo, view, theme),
     }
 }
 
@@ -87,12 +87,7 @@ fn section_header(title: &str, right: &str, content_width: usize, theme: &Theme)
     ])
 }
 
-fn todo_line(
-    todo: &TodoRow,
-    content_width: usize,
-    view: &ListView<'_>,
-    theme: &Theme,
-) -> Line<'static> {
+fn todo_line(todo: &TodoRow, view: &ListView<'_>, theme: &Theme) -> Line<'static> {
     let is_cursor = view.cursor == Some(&todo.id);
     let is_selected = view
         .selection
@@ -102,10 +97,9 @@ fn todo_line(
 
     let right = right_column(todo);
     let right_width = text::width(&right);
-    let text_width = content_width
-        .saturating_sub(text::to_usize(PREFIX_WIDTH))
-        .saturating_sub(right_width)
-        .max(10);
+    // The layout already decided this and wrapped the text to it. Recomputing it here
+    // would be a second opinion that can disagree.
+    let text_width = todo.columns.text_width;
 
     let text_style = if is_editing {
         theme.editing
@@ -132,9 +126,11 @@ fn todo_line(
         spans.push(Span::raw(" ".repeat(text::to_usize(PREFIX_WIDTH))));
     }
 
-    spans.push(Span::styled(
-        text::pad_end(&todo.line, text_width),
-        text_style,
+    // The text carries the style and the padding does not, so a completed todo is struck
+    // through to the end of its words rather than across the gap to the date column.
+    spans.push(Span::styled(todo.line.clone(), text_style));
+    spans.push(Span::raw(
+        " ".repeat(text_width.saturating_sub(text::width(&todo.line))),
     ));
     spans.push(Span::styled(
         if todo.is_first_line() {
