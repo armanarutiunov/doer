@@ -342,7 +342,7 @@ mod caret {
         });
         let mut terminal = fixture.render();
 
-        // Content column starts at 49, four columns of prefix, then 买菜 (4) + " ok" (3).
-        assert_eq!(cursor_of(&mut terminal), (49 + 4 + 7, 3));
+        // Content column starts at 38, four columns of prefix, then 买菜 (4) + " ok" (3).
+        assert_eq!(cursor_of(&mut terminal), (38 + 4 + 7, 3));
     }
 }

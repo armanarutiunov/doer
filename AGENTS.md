@@ -25,6 +25,19 @@ and ignoring wrapping, so scrolling drifted as soon as a todo wrapped. Do not re
 a second way to answer "which screen row is the cursor on". If you need that number, ask
 the layout.
 
+## The list has a maximum width, not a percentage
+
+`Geometry::content_width` gives the list everything except a small margin, up to
+`CONTENT_MAX_WIDTH`, and centres it. A percentage -- what the Elixir build used -- is the
+wrong shape for a terminal, because the thing being sized is a line of text rather than a
+proportion of the screen: the same share is stingy at eighty columns and absurd at three
+hundred.
+
+The date columns are sized from the widest label a section holds, so values sit under the
+words that name them. Where the labels will not fit, they are dropped and the columns
+shrink to the dates themselves -- aligned with labels, or compact without them, never
+misaligned.
+
 ## The files are a shared contract, not this binary's private state
 
 Treat `~/.doer` as a format other programs and other builds of doer also read and write,

@@ -93,10 +93,10 @@ mod tests {
 
     #[test]
     fn the_odd_remainder_column_stays_on_the_right() {
-        // 81 wide: content 48, so 33 spare — 16 left, 17 right, as the Elixir div/2 did.
+        // 81 wide: content 77, so 4 spare — 2 left, 2 right, as the Elixir div/2 did.
         let f = frames(screen(81, 24), false);
-        assert_eq!(f.content.x, 16);
-        assert_eq!(f.content.width, 48);
+        assert_eq!(f.content.x, 2);
+        assert_eq!(f.content.width, 77);
     }
 
     /// The scroll maths derives the viewport height from `PAD_Y_TOP + BOTTOM_RESERVED`
@@ -141,7 +141,7 @@ mod tests {
     fn a_tiny_screen_still_yields_a_usable_content_row() {
         let f = frames(screen(40, 10), true);
         assert!(f.sidebar.is_none());
-        assert_eq!(f.content.width, 24);
+        assert_eq!(f.content.width, 36);
         assert_eq!(f.content.height, 4);
     }
 

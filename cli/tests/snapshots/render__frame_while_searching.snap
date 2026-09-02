@@ -3,26 +3,26 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
   All Todos                        │                                            |
-                                   │             Todos          Created         |
+                                   │      Todos                        Created  |
   Projects                         │                                            |
-                                   │           ◯ call the plumber    5d         |
-  # Work                           │           ◯ a deliberately     12d         |
-    # Deep                         │             long todo that                 |
-                                   │             has to wrap                    |
-                                   │             across more than               |
-                                   │             one line to prove              |
-                                   │             the scroll model               |
-                                   │             counts them                    |
+                                   │    ◯ call the plumber                  5d  |
+  # Work                           │    ◯ a deliberately long todo         12d  |
+    # Deep                         │      that has to wrap across               |
+                                   │      more than one line to prove           |
+                                   │      the scroll model counts               |
+                                   │      them                                  |
                                    │                                            |
                                    │                                            |
-                                   │             Completed  Created  Co         |
+                                   │      Completed         Created  Completed  |
                                    │                                            |
-                                   │           ◉ ship the port  30d  2d         |
-                                   │                                            |
+                                   │    ◉ ship the port         30d         2d  |
                                    │                                            |
                                    │                                            |
                                    │                                            |
-                                   │         /the                               |
                                    │                                            |
-                                   │          SEARCH   1/5 completed            |
+                                   │                                            |
+                                   │                                            |
+                                   │  /the                                      |
+                                   │                                            |
+                                   │   SEARCH          1/5 completed            |
                                    │                                            |

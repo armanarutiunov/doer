@@ -3,15 +3,13 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
   All Todos                        │                                            |
-                                   │             # Work todos   Created         |
+                                   │      # Work todos                 Created  |
   Projects                         │                                            |
-                                   │           ◯ a deliberately     12d         |
-  # Work                           │             long todo that                 |
-    # Deep                         │             has to wrap                    |
-                                   │             across more than               |
-                                   │             one line to prove              |
-                                   │             the scroll model               |
-                                   │             counts them                    |
+                                   │    ◯ a deliberately long todo         12d  |
+  # Work                           │      that has to wrap across               |
+    # Deep                         │      more than one line to prove           |
+                                   │      the scroll model counts               |
+                                   │      them                                  |
                                    │                                            |
                                    │                                            |
                                    │                                            |
@@ -24,5 +22,7 @@ expression: text_of(terminal.backend().buffer())
                                    │                                            |
                                    │                                            |
                                    │                                            |
-                                   │          NORMAL   0/1 completed            |
+                                   │                                            |
+                                   │                                            |
+                                   │   NORMAL     0/1 completed     ? for help  |
                                    │                                            |
