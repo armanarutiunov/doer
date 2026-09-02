@@ -8,7 +8,13 @@ use crate::workspace::{Bucket, Workspace};
 
 pub const SIDEBAR_WIDTH: u16 = 35;
 pub const BORDER_WIDTH: u16 = 1;
-pub const CONTENT_PERCENT: u16 = 75;
+/// The list stops growing here. A row is a checkbox, a short line of text and a date;
+/// past this the eye has to travel a long way from one to the other, and the screen
+/// looks emptier for being fuller.
+pub const CONTENT_MAX_WIDTH: u16 = 100;
+/// Breathing room kept either side before the list starts giving up width, so a narrow
+/// terminal spends almost everything on the list instead of on margins.
+pub const CONTENT_SIDE_PAD: u16 = 2;
 pub const CONTENT_MIN_WIDTH: u16 = 20;
 pub const PAD_Y_TOP: u16 = 1;
 pub const BOTTOM_RESERVED: u16 = 5;
@@ -59,15 +65,17 @@ impl Geometry {
         }
     }
 
-    /// A share of the width beside the sidebar, centred. The Elixir build used 60%,
-    /// which left a lot of a wide terminal unused for a list whose rows are short.
+    /// As wide as it can be without exceeding a comfortable maximum, centred in what is
+    /// left. A share of the width -- what the Elixir build did -- is the wrong shape for
+    /// a terminal: the same percentage is stingy at eighty columns and absurd at three
+    /// hundred, because the thing being sized is a line of text, not a proportion.
     #[must_use]
     pub fn content_width(&self) -> u16 {
-        let available = self.available_width();
-        let scaled = u32::from(available) * u32::from(CONTENT_PERCENT) / 100;
-        text::to_u16(scaled as usize)
-            .max(CONTENT_MIN_WIDTH)
-            .min(available.max(1))
+        let available = self.available_width().max(1);
+        available
+            .saturating_sub(CONTENT_SIDE_PAD * 2)
+            .clamp(CONTENT_MIN_WIDTH, CONTENT_MAX_WIDTH)
+            .min(available)
     }
 
     /// Columns of padding left of the content column. The remainder column goes
@@ -593,23 +601,50 @@ mod tests {
             .collect()
     }
 
+    /// The list never runs wider than a line worth reading, and never leaves a narrow
+    /// terminal padding space it could have spent on text.
     #[test]
-    fn content_width_is_sixty_percent_without_floating_point() {
+    fn the_list_grows_to_a_maximum_and_then_stops() {
         for width in 1..=400u16 {
             let geo = Geometry::new(width, 40, false);
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let expected = ((f64::from(width) * 0.75) as u16)
-                .max(CONTENT_MIN_WIDTH)
-                .min(width.max(1));
-            assert_eq!(geo.content_width(), expected, "width {width}");
+            let content = geo.content_width();
+
+            assert!(
+                content <= CONTENT_MAX_WIDTH,
+                "width {width} exceeded the maximum"
+            );
+            assert!(
+                content <= width.max(1),
+                "width {width} overflowed the screen"
+            );
+            assert!(
+                content + geo.left_pad() * 2 <= width.max(1),
+                "width {width} does not fit its own padding"
+            );
+            if width > CONTENT_MAX_WIDTH + CONTENT_SIDE_PAD * 2 {
+                assert_eq!(content, CONTENT_MAX_WIDTH, "width {width} should be capped");
+            } else if width > CONTENT_MIN_WIDTH + CONTENT_SIDE_PAD * 2 {
+                assert_eq!(
+                    content,
+                    width - CONTENT_SIDE_PAD * 2,
+                    "width {width} should keep only its padding"
+                );
+            }
         }
+    }
+
+    #[test]
+    fn a_wide_screen_centres_the_list_rather_than_stretching_it() {
+        let geo = Geometry::new(300, 40, false);
+        assert_eq!(geo.content_width(), CONTENT_MAX_WIDTH);
+        assert_eq!(geo.left_pad(), (300 - CONTENT_MAX_WIDTH) / 2);
     }
 
     #[test]
     fn the_remainder_column_of_an_odd_split_goes_on_the_right() {
         let geo = Geometry::new(81, 40, false);
-        assert_eq!(geo.content_width(), 60);
-        assert_eq!(geo.left_pad(), 10);
+        assert_eq!(geo.content_width(), 77);
+        assert_eq!(geo.left_pad(), 2);
     }
 
     #[test]
@@ -1032,7 +1067,7 @@ mod narrow_tests {
 
     #[test]
     fn the_completed_column_goes_before_the_age_column() {
-        let rows = rows_for("short", true, 30);
+        let rows = rows_for("short", true, 26);
         let columns = rows.first().expect("a row").columns;
         assert_eq!(
             columns.completed, None,
@@ -1060,7 +1095,7 @@ mod narrow_tests {
         };
         // Too narrow for a label, so the columns carry none rather than misaligning.
         assert_eq!(DateColumns::fit(18, narrow, true).header_label(), "");
-        assert_eq!(DateColumns::fit(34, narrow, true).header_label(), "");
+        assert_eq!(DateColumns::fit(24, narrow, true).header_label(), "");
         assert_eq!(
             DateColumns::fit(40, narrow, false).header_label().trim(),
             "Created"
