@@ -8,21 +8,21 @@ use crate::workspace::{Bucket, Workspace};
 
 pub const SIDEBAR_WIDTH: u16 = 35;
 pub const BORDER_WIDTH: u16 = 1;
-pub const CONTENT_PERCENT: u16 = 60;
+pub const CONTENT_PERCENT: u16 = 75;
 pub const CONTENT_MIN_WIDTH: u16 = 20;
 pub const PAD_Y_TOP: u16 = 1;
 pub const BOTTOM_RESERVED: u16 = 5;
 pub const SCROLL_MARGIN: usize = 5;
 pub const PREFIX_WIDTH: u16 = 4;
 
-const AGE_COLUMN: usize = 7;
 /// The text is the point of a row, so a date column is shrunk and then dropped rather
 /// than squeezing the text below this. Twelve columns is roughly two short words, which
 /// is where wrapping stops being readable.
 const MIN_TEXT_WIDTH: usize = 12;
-/// A column never shrinks below this, so a label always has room.
+/// A column never shrinks below this, so a date always has room.
 const MIN_COLUMN: usize = 2;
-const COMPLETED_COLUMN: usize = 9;
+const AGE_LABEL: &str = "Created";
+const COMPLETED_LABEL: &str = "Completed";
 pub const EMPTY_HINT: &str = "press 'a' to add a new todo";
 
 /// Terminal geometry, and the derived widths every layout decision reads.
@@ -59,8 +59,8 @@ impl Geometry {
         }
     }
 
-    /// 60% of the available width, matching `trunc(available * 0.6)` exactly for
-    /// every width the terminal can report, without a float.
+    /// A share of the width beside the sidebar, centred. The Elixir build used 60%,
+    /// which left a lot of a wide terminal unused for a list whose rows are short.
     #[must_use]
     pub fn content_width(&self) -> u16 {
         let available = self.available_width();
@@ -97,6 +97,9 @@ impl Geometry {
 pub struct DateColumns {
     pub age: Option<usize>,
     pub completed: Option<usize>,
+    /// Whether the header names these columns. A column narrower than its own label
+    /// cannot sit under it, so the labels are dropped rather than left misaligned.
+    pub labeled: bool,
     pub text_width: usize,
 }
 
@@ -121,30 +124,39 @@ impl DateWidths {
 }
 
 impl DateColumns {
-    /// Sizes the date columns to the labels a section actually holds.
+    /// Sizes the date columns, preferring to keep the header labels over them.
     ///
-    /// The columns are capped at the widths the Elixir build used, so a row can never
-    /// grow wider than it was there, and floored so a label always fits. Nothing before
-    /// `1000d` reaches the cap.
+    /// A labelled column is at least as wide as its label, so the values line up under
+    /// the words. Where that will not fit, the columns shrink to the widths the dates
+    /// themselves need and the labels go with them: a value under the tail of a word it
+    /// does not fit beneath reads as a mistake, which is what it was.
     #[must_use]
     pub fn fit(content_width: u16, widths: DateWidths, has_completed: bool) -> Self {
         let budget = text::to_usize(content_width).saturating_sub(text::to_usize(PREFIX_WIDTH));
-        let age = widths.age.clamp(MIN_COLUMN, AGE_COLUMN);
-        let completed = widths.completed.clamp(MIN_COLUMN, COMPLETED_COLUMN);
 
-        // Widest arrangement first; the first one that leaves the text a workable column
-        // wins.
-        let candidates: [(Option<usize>, Option<usize>); 3] = if has_completed {
+        let bare_age = widths.age.max(MIN_COLUMN);
+        let bare_completed = widths.completed.max(MIN_COLUMN);
+        let named_age = bare_age.max(text::width(AGE_LABEL));
+        let named_completed = bare_completed.max(text::width(COMPLETED_LABEL));
+
+        // Widest arrangement first; the first that leaves the text a workable column wins.
+        let candidates: [(Option<usize>, Option<usize>, bool); 4] = if has_completed {
             [
-                (Some(age), Some(completed)),
-                (Some(age), None),
-                (None, None),
+                (Some(named_age), Some(named_completed), true),
+                (Some(bare_age), Some(bare_completed), false),
+                (Some(bare_age), None, false),
+                (None, None, false),
             ]
         } else {
-            [(Some(age), None), (None, None), (None, None)]
+            [
+                (Some(named_age), None, true),
+                (Some(bare_age), None, false),
+                (None, None, false),
+                (None, None, false),
+            ]
         };
 
-        for (age, completed) in candidates {
+        for (age, completed, labeled) in candidates {
             let right = Self::right_width(age, completed);
             let text_width = budget.saturating_sub(right);
             if right == 0 {
@@ -154,6 +166,7 @@ impl DateColumns {
                 return Self {
                     age,
                     completed,
+                    labeled,
                     text_width,
                 };
             }
@@ -161,6 +174,7 @@ impl DateColumns {
         Self {
             age: None,
             completed: None,
+            labeled: false,
             text_width: budget.max(1),
         }
     }
@@ -175,16 +189,19 @@ impl DateColumns {
         Self::right_width(self.age, self.completed)
     }
 
-    /// The header label, spaced to sit over the columns actually drawn.
+    /// The header label, spaced so each word ends where its column ends.
     #[must_use]
     pub fn header_label(self) -> String {
+        if !self.labeled {
+            return String::new();
+        }
         match (self.age, self.completed) {
             (Some(age), Some(completed)) => format!(
                 "{}  {}",
-                text::pad_start("Created", age),
-                text::pad_start("Completed", completed)
+                text::pad_start(AGE_LABEL, age),
+                text::pad_start(COMPLETED_LABEL, completed)
             ),
-            (Some(age), None) => text::pad_start("Created", age),
+            (Some(age), None) => text::pad_start(AGE_LABEL, age),
             _ => String::new(),
         }
     }
@@ -581,7 +598,7 @@ mod tests {
         for width in 1..=400u16 {
             let geo = Geometry::new(width, 40, false);
             #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let expected = ((f64::from(width) * 0.6) as u16)
+            let expected = ((f64::from(width) * 0.75) as u16)
                 .max(CONTENT_MIN_WIDTH)
                 .min(width.max(1));
             assert_eq!(geo.content_width(), expected, "width {width}");
@@ -591,8 +608,8 @@ mod tests {
     #[test]
     fn the_remainder_column_of_an_odd_split_goes_on_the_right() {
         let geo = Geometry::new(81, 40, false);
-        assert_eq!(geo.content_width(), 48);
-        assert_eq!(geo.left_pad(), 16);
+        assert_eq!(geo.content_width(), 60);
+        assert_eq!(geo.left_pad(), 10);
     }
 
     #[test]
@@ -890,11 +907,11 @@ mod narrow_tests {
 
     #[test]
     fn a_column_is_sized_to_the_labels_the_section_holds() {
-        // "0d" everywhere, so both columns sit at the floor rather than the old pads.
+        // "0d" everywhere, so the labels are what set the width.
         let rows = rows_for("short", true, 200);
         let columns = rows.first().expect("a row").columns;
-        assert_eq!(columns.age, Some(MIN_COLUMN));
-        assert_eq!(columns.completed, Some(MIN_COLUMN));
+        assert_eq!(columns.age, Some(text::width(AGE_LABEL)));
+        assert_eq!(columns.completed, Some(text::width(COMPLETED_LABEL)));
     }
 
     /// A foreign or older file can hold a done todo with no completion timestamp. It
@@ -939,22 +956,68 @@ mod narrow_tests {
         }
     }
 
+    /// A labelled column holds its label, so the value sits under the word rather than
+    /// under the tail of it.
     #[test]
-    fn a_column_never_grows_past_the_width_the_elixir_build_used() {
-        let widths = DateWidths {
-            age: 99,
-            completed: 99,
-        };
-        let columns = DateColumns::fit(200, widths, true);
-        assert_eq!(columns.age, Some(AGE_COLUMN));
-        assert_eq!(columns.completed, Some(COMPLETED_COLUMN));
+    fn a_labelled_column_is_at_least_as_wide_as_its_label() {
+        let columns = DateColumns::fit(
+            200,
+            DateWidths {
+                age: 2,
+                completed: 2,
+            },
+            true,
+        );
+        assert!(columns.labeled);
+        assert_eq!(columns.age, Some(text::width(AGE_LABEL)));
+        assert_eq!(columns.completed, Some(text::width(COMPLETED_LABEL)));
+
+        let label = columns.header_label();
+        assert_eq!(
+            text::width(&label),
+            columns.width().saturating_sub(2),
+            "the label spans its columns and the gap between them"
+        );
+    }
+
+    /// A date wider than its own label widens the column rather than being cut.
+    #[test]
+    fn a_column_grows_past_its_label_when_the_dates_need_it() {
+        let columns = DateColumns::fit(
+            200,
+            DateWidths {
+                age: 12,
+                completed: 2,
+            },
+            true,
+        );
+        assert_eq!(columns.age, Some(12));
+    }
+
+    /// Where the labels will not fit, they go rather than sitting over columns too
+    /// narrow to hold them.
+    #[test]
+    fn narrow_columns_lose_their_labels_rather_than_misaligning() {
+        let columns = DateColumns::fit(
+            34,
+            DateWidths {
+                age: 2,
+                completed: 2,
+            },
+            true,
+        );
+        assert!(!columns.labeled);
+        assert_eq!(columns.age, Some(2));
+        assert_eq!(columns.header_label(), "");
     }
 
     #[test]
     fn one_old_todo_widens_the_column_for_its_whole_section() {
         let mut ws = Workspace::new(Vec::new(), Projects::default(), HashMap::new());
         ws.push_todo(&Bucket::All, Todo::new("recent", T0));
-        ws.push_todo(&Bucket::All, Todo::new("ancient", T0 - 400 * 86_400));
+        // Older than its own label is wide, so the dates set the width rather than
+        // "Created" doing it.
+        ws.push_todo(&Bucket::All, Todo::new("ancient", T0 - 1_000_000 * 86_400));
 
         let geo = Geometry::new(200, 40, false);
         let dl = DisplayList::build(&ws, &ViewId::All, None);
@@ -963,13 +1026,13 @@ mod narrow_tests {
             Row::Todo(todo) => Some(todo),
             _ => None,
         }) {
-            assert_eq!(row.columns.age, Some(4), "sized for 400d, not for 0d");
+            assert_eq!(row.columns.age, Some(8), "sized for 1000000d, not for 0d");
         }
     }
 
     #[test]
     fn the_completed_column_goes_before_the_age_column() {
-        let rows = rows_for("short", true, 34);
+        let rows = rows_for("short", true, 30);
         let columns = rows.first().expect("a row").columns;
         assert_eq!(
             columns.completed, None,
@@ -995,11 +1058,9 @@ mod narrow_tests {
             age: 2,
             completed: 2,
         };
+        // Too narrow for a label, so the columns carry none rather than misaligning.
         assert_eq!(DateColumns::fit(18, narrow, true).header_label(), "");
-        assert_eq!(
-            DateColumns::fit(22, narrow, true).header_label().trim(),
-            "Created"
-        );
+        assert_eq!(DateColumns::fit(34, narrow, true).header_label(), "");
         assert_eq!(
             DateColumns::fit(40, narrow, false).header_label().trim(),
             "Created"

@@ -3,32 +3,32 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
   All Todos                        │                                                                |
-                                   │                 Todos                      Created             |
+                                   │            Todos                                Created        |
   Projects                         │                                                                |
-                                   │               ◯ buy milk                        1d             |
-  # Work                           │               ◯ call the plumber                5d             |
+                                   │          ◯ buy milk                                  1d        |
+  # Work                           │          ◯ call the plumber                          5d        |
     # Deep                         │                                                                |
                                    │                                                                |
-                                   │                 # Work                     Created             |
+                                   │            # Work                               Created        |
                                    │                                                                |
-                                   │               ◯ a deliberately long todo that  12d             |
-                                   │                 has to wrap across more than                   |
-                                   │                 one line to prove the scroll                   |
-                                   │                 model counts them                              |
-                                   │                                                                |
-                                   │                                                                |
-                                   │                 # Work / Deep              Created             |
-                                   │                                                                |
-                                   │               ◯ nested project todo             3d             |
+                                   │          ◯ a deliberately long todo that has        12d        |
+                                   │            to wrap across more than one line                   |
+                                   │            to prove the scroll model counts                    |
+                                   │            them                                                |
                                    │                                                                |
                                    │                                                                |
-                                   │                 Completed       Created  Completed             |
+                                   │            # Work / Deep                        Created        |
                                    │                                                                |
-                                   │               ◉ ship the port              30d  2d             |
+                                   │          ◯ nested project todo                       3d        |
                                    │                                                                |
                                    │                                                                |
+                                   │            Completed                 Created  Completed        |
+                                   │                                                                |
+                                   │          ◉ ship the port                 30d         2d        |
                                    │                                                                |
                                    │                                                                |
                                    │                                                                |
-                                   │              NORMAL    1/5 completed    ? for help             |
+                                   │                                                                |
+                                   │                                                                |
+                                   │         NORMAL         1/5 completed         ? for help        |
                                    │                                                                |

@@ -3,26 +3,26 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
   All Todos                        │                                            |
-                                   │             Todos          Created         |
+                                   │         Todos                 Created      |
   Projects                         │                                            |
-                                   │           ◯ buy milk            1d         |
-  # Work                           │           ◯ call the plumber    5d         |
+                                   │       ◯ buy milk                   1d      |
+  # Work                           │       ◯ call the plumber           5d      |
     # Deep                         │                                            |
                                    │                                            |
-                                   │             # Work         Created         |
+                                   │         # Work                Created      |
                                    │                                            |
-                                   │           ◯ a deliberately     12d         |
-                                   │             long todo that                 |
-                                   │             has to wrap                    |
-                                   │             across more than               |
-                                   │             one line to prove              |
-                                   │             the scroll model               |
-                                   │             counts them                    |
-                                   │                                            |
-                                   │                                            |
-                                   │             # Work / Deep  Created         |
+                                   │       ◯ a deliberately long       12d      |
+                                   │         todo that has to                   |
+                                   │         wrap across more                   |
+                                   │         than one line to                   |
+                                   │         prove the scroll                   |
+                                   │         model counts them                  |
                                    │                                            |
                                    │                                            |
+                                   │         # Work / Deep         Created      |
                                    │                                            |
-                                   │          NORMAL   1/5 completed            |
+                                   │                                            |
+                                   │                                            |
+                                   │                                            |
+                                   │      NORMAL  1/5 completed ? for help      |
                                    │                                            |

@@ -3,12 +3,12 @@ source: cli/tests/render.rs
 expression: text_of(terminal.backend().buffer())
 ---
                                         |
-            Todos        Created        |
+         Todos              Created     |
                                         |
-          ◯ buy milk          1d        |
-          ◯ call the          5d        |
+       ◯ buy milk                1d     |
+       ◯ call the plumber        5d     |
                                         |
                                         |
                                         |
-         NORMAL  1/5 completed          |
+      NORMAL     1/5 completed          |
                                         |
